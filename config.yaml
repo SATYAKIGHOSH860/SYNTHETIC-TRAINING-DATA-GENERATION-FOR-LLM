@@ -1,0 +1,141 @@
+# ---------------------------------------------------------------------------
+# Every tunable value in the pipeline lives here. Nothing is hardcoded in code.
+# Override any key from the CLI or code with a dotted path, e.g.
+#   validate.min_quality_score=5
+# ---------------------------------------------------------------------------
+
+model:
+  provider: groq
+  # Verified on 2026-09-23 against GET https://api.groq.com/openai/v1/models.
+  # llama-3.3-70b-versatile is no longer served by Groq; gpt-oss-120b is the
+  # largest instruct model currently available. Re-check before every new run.
+  id: openai/gpt-oss-120b
+  # The judge is a different model family from the generator, which avoids
+  # LLM-as-judge self-preference bias (a model rating its own phrasing higher).
+  # It also has its own per-model rate-limit bucket, so judging does not eat
+  # into the generator's daily quota.
+  judge_id: qwen/qwen3.8-27b
+  generation_temperature: 0.4
+  judge_temperature: 0.0
+  # gpt-oss models reason before answering; "low" keeps quality for this
+  # extraction-style task while cutting hidden reasoning tokens (and TPM usage).
+  reasoning_effort: low
+  # Output caps. Groq admits a request only if prompt + max_tokens fits in the
+  # remaining tokens-per-minute budget, so an oversized cap slows every call.
+  # Measured on 25 chunks: generation used at most 423 completion tokens
+  # (including hidden reasoning), judge replies about 200.
+  generation_max_tokens: 1024
+  judge_max_tokens: 512
+  max_retries: 3
+  request_delay_seconds: 1.0
+  request_timeout_seconds: 90
+  # Groq free-tier limits for the models above (read from x-ratelimit headers).
+  # The client paces itself below these so runs rarely hit HTTP 429.
+  requests_per_minute: 30
+  tokens_per_minute: 8000
+
+domain:
+  name: "WHO clinical guidelines"
+  system_role: "an expert medical educator creating training data from WHO clinical guidelines"
+
+paths:
+  # Relative paths resolve against the project root (the folder of this file),
+  # not the current working directory.
+  raw_dir: data/raw
+  cache_dir: data/cache
+  output_dir: data/output
+  uploads_dir: data/uploads
+
+ingest:
+  chunk_size: 600
+  chunk_overlap: 80
+  min_chunk_chars: 100
+  # A PDF whose extracted text totals fewer characters than this is almost
+  # certainly a scanned image with no text layer.
+  min_pdf_chars: 200
+  # Drop boilerplate chunks: they are grounded text but yield trivia ("Which
+  # university is X from?") rather than clinical knowledge. Thresholds were
+  # calibrated on the three WHO guidelines; see src/ingest.py boilerplate_reason.
+  filter_boilerplate: true
+  max_citation_markers: 3         # more "et al" / doi / "2002;56" marks -> reference list
+  max_author_initials: 2          # more "Surname AB," patterns -> reference list
+  max_legal_markers: 1            # more copyright / licence phrases -> front matter
+  max_toc_entries: 4              # more "Title 15 Next" entries -> table of contents
+  max_capitalised_ratio: 0.5      # share of Capitalised words -> name lists, glossaries, table headers
+  max_numeric_ratio: 0.4          # share of numeric tokens -> linearised data tables
+
+generate:
+  questions_per_chunk: 3
+  question_types: [factual, definitional, procedural]
+  unanswerable_ratio: 0.10          # fraction of chunks also producing an unanswerable question
+  abstention_answer: "This information is not available in the provided document."
+  # How a question may name its source. "According to the passage, ..." is
+  # rewritten to this, so the pair still makes sense without the passage.
+  source_reference: "the WHO guideline"
+  min_question_chars: 15
+  min_answer_chars: 25
+
+validate:
+  min_quality_score: 4              # out of 6
+  # Per-criterion floors, applied on top of the total. Without them 2+2+0 = 4
+  # passes: a specific, complete answer with a FABRICATED number would be kept
+  # (observed in testing). Groundedness 2 = every claim traceable to the passage.
+  min_criterion_scores:
+    groundedness: 2
+    specificity: 1
+    completeness: 1
+  passage_chars: 800
+  # Score all pairs from one chunk in a single judge call. Each pair still gets
+  # its own independent sub-scores; the passage and rubric are sent once instead
+  # of once per pair, roughly halving judge tokens under an 8k tokens/min cap.
+  group_by_chunk: true
+
+deduplicate:
+  embedding_model: all-MiniLM-L6-v2
+  # What is embedded: "question" (the spec's choice) or "question_answer".
+  # A duplicate is a pair that teaches the SAME FACT. Measured on this data,
+  # question-only similarity put distinct facts about one topic (strength vs
+  # quality of a recommendation; outcomes vs certainty) at 0.85-0.94, above
+  # 0.85; adding the answer brings them to 0.65-0.87 while restatements of
+  # one fact stay at 0.90-0.99. See README, experiment 2.
+  embed: question_answer
+  similarity_threshold: 0.90
+  # Answers stating different numbers (doses, ages, hazard ratios) are never
+  # duplicates: the embedding model barely registers digits (HR 3.4 vs 12.3 -> 0.99).
+  require_same_numbers: true
+  batch_size: 64
+
+export:
+  # Put the source passage in the ChatML user turn ("Context: ... Question: ...").
+  # Needed for the unanswerable examples to make sense: "not available in the
+  # provided document" is only learnable if the model is shown the document.
+  chatml_include_context: true
+
+agreement:
+  sample_size: 40
+  seed: 42
+
+run:
+  max_chunks: 100                   # null for all chunks
+  checkpoint_every: 25
+  seed: 42
+
+web:
+  max_chunks_per_upload: 30         # demo mode cap — see Task 10
+  max_upload_mb: 25
+  max_files_per_job: 3
+  # Output tab: list every upload job saved on this machine (true), or only the
+  # current browser session's job (false). Public mode always shows only the
+  # session's own job, so visitors cannot download each other's results.
+  show_all_upload_jobs: true
+  # Public mode makes the dashboard safe to put on the internet (e.g. Streamlit
+  # Community Cloud). The finished results stay viewable and downloadable, but
+  # nobody can re-run the pipeline, change the human labels or use the server's
+  # API key: uploads need the visitor's own Groq key, held in their browser
+  # session only.
+  #   auto  - public unless the server listens only on this computer (the
+  #           desktop launcher starts it that way) and the page is opened on
+  #           this computer, so a deployment is safe even if nobody remembers
+  #           to switch this on
+  #   true / false - force it on or off
+  public_mode: auto

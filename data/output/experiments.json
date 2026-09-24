@@ -1,0 +1,544 @@
+{
+  "judged_pairs": 242,
+  "quality_thresholds": [
+    {
+      "rule": "total only (spec)",
+      "min_score": 3,
+      "kept": 232,
+      "kept_pct_of_judged": 1.0,
+      "after_dedup": 226,
+      "avg_quality": 5.922,
+      "kept_with_groundedness_below_2": 10
+    },
+    {
+      "rule": "total only (spec)",
+      "min_score": 4,
+      "kept": 230,
+      "kept_pct_of_judged": 0.9914,
+      "after_dedup": 224,
+      "avg_quality": 5.948,
+      "kept_with_groundedness_below_2": 8
+    },
+    {
+      "rule": "total only (spec)",
+      "min_score": 5,
+      "kept": 227,
+      "kept_pct_of_judged": 0.9784,
+      "after_dedup": 221,
+      "avg_quality": 5.974,
+      "kept_with_groundedness_below_2": 5
+    },
+    {
+      "rule": "total only (spec)",
+      "min_score": 6,
+      "kept": 221,
+      "kept_pct_of_judged": 0.9526,
+      "after_dedup": 215,
+      "avg_quality": 6.0,
+      "kept_with_groundedness_below_2": 0
+    },
+    {
+      "rule": "total + floors (used)",
+      "min_score": 3,
+      "kept": 222,
+      "kept_pct_of_judged": 0.9569,
+      "after_dedup": 216,
+      "avg_quality": 5.995,
+      "kept_with_groundedness_below_2": 0
+    },
+    {
+      "rule": "total + floors (used)",
+      "min_score": 4,
+      "kept": 222,
+      "kept_pct_of_judged": 0.9569,
+      "after_dedup": 216,
+      "avg_quality": 5.995,
+      "kept_with_groundedness_below_2": 0
+    },
+    {
+      "rule": "total + floors (used)",
+      "min_score": 5,
+      "kept": 222,
+      "kept_pct_of_judged": 0.9569,
+      "after_dedup": 216,
+      "avg_quality": 5.995,
+      "kept_with_groundedness_below_2": 0
+    },
+    {
+      "rule": "total + floors (used)",
+      "min_score": 6,
+      "kept": 221,
+      "kept_pct_of_judged": 0.9526,
+      "after_dedup": 215,
+      "avg_quality": 6.0,
+      "kept_with_groundedness_below_2": 0
+    }
+  ],
+  "dedup_thresholds": [
+    {
+      "setting": "question only (spec)",
+      "threshold": 0.75,
+      "input": 232,
+      "removed": 73,
+      "survivors": 159,
+      "removed_pct": 0.3147
+    },
+    {
+      "setting": "question only (spec)",
+      "threshold": 0.8,
+      "input": 232,
+      "removed": 42,
+      "survivors": 190,
+      "removed_pct": 0.181
+    },
+    {
+      "setting": "question only (spec)",
+      "threshold": 0.85,
+      "input": 232,
+      "removed": 27,
+      "survivors": 205,
+      "removed_pct": 0.1164
+    },
+    {
+      "setting": "question only (spec)",
+      "threshold": 0.9,
+      "input": 232,
+      "removed": 18,
+      "survivors": 214,
+      "removed_pct": 0.0776
+    },
+    {
+      "setting": "question only (spec)",
+      "threshold": 0.95,
+      "input": 232,
+      "removed": 6,
+      "survivors": 226,
+      "removed_pct": 0.0259
+    },
+    {
+      "setting": "question + answer, number guard (used)",
+      "threshold": 0.75,
+      "input": 232,
+      "removed": 48,
+      "survivors": 184,
+      "removed_pct": 0.2069
+    },
+    {
+      "setting": "question + answer, number guard (used)",
+      "threshold": 0.8,
+      "input": 232,
+      "removed": 27,
+      "survivors": 205,
+      "removed_pct": 0.1164
+    },
+    {
+      "setting": "question + answer, number guard (used)",
+      "threshold": 0.85,
+      "input": 232,
+      "removed": 11,
+      "survivors": 221,
+      "removed_pct": 0.0474
+    },
+    {
+      "setting": "question + answer, number guard (used)",
+      "threshold": 0.9,
+      "input": 232,
+      "removed": 6,
+      "survivors": 226,
+      "removed_pct": 0.0259
+    },
+    {
+      "setting": "question + answer, number guard (used)",
+      "threshold": 0.95,
+      "input": 232,
+      "removed": 2,
+      "survivors": 230,
+      "removed_pct": 0.0086
+    }
+  ],
+  "dedup_weakest_removals": {
+    "question@0.75": [
+      {
+        "similarity": 0.75,
+        "removed": "Which child outcomes did the authors assess three years after the nutrition-education programme?",
+        "removed_answer": "The authors assessed the growth and psychological functioning of the children three years later.",
+        "duplicate_of": "What was the duration of the nutrition-education programme provided to the mothers?",
+        "kept_answer": "The nutrition-education programme was provided to the mothers for a few months."
+      },
+      {
+        "similarity": 0.752,
+        "removed": "What key challenges during HIV disclosure are noted by the Guideline Group?",
+        "removed_answer": "The challenges include HIV-related stigma, changing caregivers and caregiver roles, high mobility of children between families, vulnerable caregivers such as grandparents and young siblings, homelessness, institutional care, and a high burden on health care workers and families due to concomitant diseases, poverty, and multiple episodes of bereavement.",
+        "duplicate_of": "According to the WHO guideline, what is known about the evidence on the effects of having a “safe” person for HIV disclosure discussions?",
+        "kept_answer": "The guideline states that there are few data addressing the effects of having “safe” persons with whom to discuss disclosure and other HIV‑related issues."
+      },
+      {
+        "similarity": 0.752,
+        "removed": "According to the WHO guidance, how does acceptability of increasing intake of dietary fibre, whole grains, vegetables, fruits, and pulses vary at the individual level?",
+        "removed_answer": "Acceptability varies widely within and across countries at the individual level.",
+        "duplicate_of": "According to the WHO guideline, what key question was revised regarding dietary fibre intake?",
+        "kept_answer": "The WHO guideline revised the key question to ask what the effect on prioritized health outcomes in adults and children is of higher intake of dietary fibre compared with lower intake."
+      },
+      {
+        "similarity": 0.753,
+        "removed": "What population is targeted in the WHO guideline recommendation regarding nutrition counselling for overweight or obese children?",
+        "removed_answer": "The guideline targets children aged less than 5 years who are overweight or obese and who attend primary health‑care facilities.",
+        "duplicate_of": "Up to what date did Peirson et al. search databases for eligible studies on nutrition counselling of caregivers of overweight or obese children?",
+        "kept_answer": "Peirson et al. searched five databases up to August 2013 for eligible studies."
+      }
+    ],
+    "question@0.8": [
+      {
+        "similarity": 0.8,
+        "removed": "According to the WHO guideline, what statistical measures are used to report outcomes when relative risk cannot be calculated for HIV‑positive children?",
+        "removed_answer": "When relative risk is not applicable, the guideline reports outcomes using mean differences in the measured variables.",
+        "duplicate_of": "How does the WHO guideline define the use of relative risk when reporting outcomes for disclosed versus non‑disclosed HIV‑positive children?",
+        "kept_answer": "Relative risk is used to indicate whether an outcome was more or less likely in the group that had been disclosed to compared with the group that had not been disclosed to."
+      },
+      {
+        "similarity": 0.804,
+        "removed": "According to health care workers, what is lacking in terms of guidance for informing children about HIV-positive status?",
+        "removed_answer": "Health care workers lack the support of definitive, evidence‑based policies and guidelines on when, how, and under what conditions children should be informed about their caregiver’s or their own HIV‑positive status.",
+        "duplicate_of": "What factors do health care workers identify as making HIV disclosure decisions complex for children?",
+        "kept_answer": "Health care workers identify HIV-related stigma, mental health and social support concerns, family functioning—including parenting and communication skills—and worries about children’s emotional and maturational ability to cope and understand the illness as factors that make disclosure decisions complex."
+      },
+      {
+        "similarity": 0.807,
+        "removed": "Which categories of stakeholders were represented in the WHO guideline development group?",
+        "removed_answer": "Representatives of potential stakeholders such as programme managers, policy advisers, and other health professionals involved in the healthcare process were included.",
+        "duplicate_of": "Who were members of the guideline development group?",
+        "kept_answer": "The guideline development group comprised content experts, methodologists, and representatives of potential stakeholder groups."
+      },
+      {
+        "similarity": 0.808,
+        "removed": "Which disease outcomes did prospective cohort studies find no association between higher dietary fibre intake and reduced risk, as reported in the WHO guideline?",
+        "removed_answer": "The studies found no association for stroke mortality and the incidence of endometrial, oesophageal, and prostate cancers.",
+        "duplicate_of": "According to the WHO guideline, what is the magnitude of risk reduction for coronary heart disease mortality associated with higher dietary fibre intake?",
+        "kept_answer": "Higher dietary fibre intake is associated with a 31% reduction in risk of coronary heart disease mortality (relative risk 0.69; 95% confidence interval 0.60 to 0.80)."
+      }
+    ],
+    "question@0.85": [
+      {
+        "similarity": 0.85,
+        "removed": "What age range of children was included in the systematic review by Peirson et al. (2015) on interventions for overweight and obesity?",
+        "removed_answer": "The review included children aged 0 to 18 years.",
+        "duplicate_of": "What age range of children was examined in the study by Laws et al., 2014 on obesity prevention interventions?",
+        "kept_answer": "The study examined children aged 0–5 years."
+      },
+      {
+        "similarity": 0.853,
+        "removed": "According to the WHO guideline, what outcomes should be measured to evaluate the effect of nutrition counselling in overweight or obese children under 5 years?",
+        "removed_answer": "Outcomes include body mass index (BMI), BMI z‑score compared to the median of the WHO child growth standards, and measures of adiposity such as percentage body fat, skinfold thickness, and fat‑free mass.",
+        "duplicate_of": "What population is targeted in the WHO guideline recommendation regarding nutrition counselling for overweight or obese children?",
+        "kept_answer": "The guideline targets children aged less than 5 years who are overweight or obese and who attend primary health‑care facilities."
+      },
+      {
+        "similarity": 0.86,
+        "removed": "What population is specified in PICOT Question 4 regarding HIV disclosure assistance?",
+        "removed_answer": "The population is HIV‑positive children who are 12 years old and under.",
+        "duplicate_of": "What population is addressed in PICOT Question 3 regarding a safe person for HIV-related discussions?",
+        "kept_answer": "The population includes HIV‑positive children aged 12 years and under and their caregivers."
+      },
+      {
+        "similarity": 0.879,
+        "removed": "In the WHO guideline, which variables were adjusted for when evaluating psychological effects in HIV‑affected children?",
+        "removed_answer": "The analysis adjusted for age, sex, and family socioeconomic status.",
+        "duplicate_of": "According to the WHO guideline, what psychological outcomes were assessed for HIV-affected children in the study by Fang et al.?",
+        "kept_answer": "The study assessed depression, loneliness, self‑esteem, general future expectations, and specific hope for the future."
+      }
+    ],
+    "question@0.9": [
+      {
+        "similarity": 0.901,
+        "removed": "What is the strength of the WHO recommendation regarding supplementary foods for moderately wasted infants and children?",
+        "removed_answer": "The strength of the recommendation is conditional.",
+        "duplicate_of": "What does the WHO recommendation state about routinely providing supplementary foods to moderately wasted infants and children presenting to primary health‑care facilities?",
+        "kept_answer": "It states that routinely providing supplementary foods to moderately wasted infants and children presenting to primary health‑care facilities is not recommended."
+      },
+      {
+        "similarity": 0.902,
+        "removed": "What additional considerations does the guideline note when recommending whole grains, vegetables, fruits, and pulses?",
+        "removed_answer": "The guideline notes that there are caveats relating to processing and preparation of these foods, which are detailed in the accompanying remarks.",
+        "duplicate_of": "According to the guideline, what is the recommendation regarding the variety of whole grains, vegetables, fruits, and pulses that should be consumed?",
+        "kept_answer": "The guideline recommends that a variety of whole grains, vegetables, fruits, and pulses should be consumed wherever possible."
+      },
+      {
+        "similarity": 0.903,
+        "removed": "According to the WHO guideline, what does the discussion suggest “mature reaction” may refer to?",
+        "removed_answer": "The discussion suggests that “mature reaction” may mean adopting a caring or concerned role appropriate to older children.",
+        "duplicate_of": "Which study mentioned in the WHO guideline does not define the term “mature reaction”?",
+        "kept_answer": "The study by Nostlinger (62) does not define “mature reaction”."
+      },
+      {
+        "similarity": 0.904,
+        "removed": "Which specific conditions are included under the undernutrition category of malnutrition?",
+        "removed_answer": "Undernutrition includes stunting (low length/height‑for‑age), wasting (low weight‑for‑length/height), acute malnutrition (low weight‑for‑length/height or low MUAC or bilateral pitting oedema), underweight (low weight‑for‑age), and micronutrient deficiencies or insufficiencies.",
+        "duplicate_of": "What are the two broad groups of conditions covered by the term malnutrition?",
+        "kept_answer": "Malnutrition covers the groups of undernutrition and overweight, which includes obesity and diet‑related noncommunicable diseases."
+      }
+    ],
+    "question@0.95": [
+      {
+        "similarity": 0.954,
+        "removed": "How many members were in the WHO guideline development group?",
+        "removed_answer": "The WHO guideline development group consisted of 17 members.",
+        "duplicate_of": "Who were members of the guideline development group?",
+        "kept_answer": "The guideline development group comprised content experts, methodologists, and representatives of potential stakeholder groups."
+      },
+      {
+        "similarity": 0.983,
+        "removed": "What are the five approaches mentioned for achieving the dietary goals in the WHO guideline?",
+        "removed_answer": "The guideline lists behaviour change interventions, fiscal policies, regulation of marketing of foods and beverages, product labelling schemes, and reformulation of manufactured products as ways to achieve the dietary goals.",
+        "duplicate_of": "What are the approaches mentioned for achieving the dietary goals in the WHO guideline?",
+        "kept_answer": "The dietary goals can be achieved through behaviour change interventions, fiscal policies, regulation of marketing of foods and beverages, product labelling schemes, and reformulation of manufactured products."
+      },
+      {
+        "similarity": 0.989,
+        "removed": "How does the WHO guideline describe the feasibility of the approaches to achieve dietary goals?",
+        "removed_answer": "The guideline states that feasibility varies depending on the approach used.",
+        "duplicate_of": "How does the WHO guideline describe the feasibility of the different approaches to achieving dietary goals?",
+        "kept_answer": "The guideline states that feasibility varies depending on the approach used."
+      },
+      {
+        "similarity": 0.994,
+        "removed": "What is the all‑cause mortality hazard ratio for children who are wasted and underweight but not stunted compared with children with no anthropometric deficits?",
+        "removed_answer": "The hazard ratio is 4.7 with a 95 % confidence interval of 3.1 to 7.1.",
+        "duplicate_of": "What is the all‑cause mortality hazard ratio for children who are stunted and underweight but not wasted compared with children with no anthropometric deficits?",
+        "kept_answer": "The hazard ratio is 3.4 with a 95 % confidence interval of 2.6 to 4.3."
+      }
+    ],
+    "question_answer@0.75": [
+      {
+        "similarity": 0.751,
+        "removed": "What did the WHO guideline report about the likelihood of negative psychological states in HIV‑affected children compared with community controls?",
+        "removed_answer": "HIV‑affected children were significantly more likely to experience negative psychological states than community controls, with p‑values ranging from .02 to less than .00001.",
+        "duplicate_of": "According to the WHO guideline, what psychological outcomes were assessed for HIV-affected children in the study by Fang et al.?",
+        "kept_answer": "The study assessed depression, loneliness, self‑esteem, general future expectations, and specific hope for the future."
+      },
+      {
+        "similarity": 0.755,
+        "removed": "According to the WHO guideline, what statistical measures are used to report outcomes when relative risk cannot be calculated for HIV‑positive children?",
+        "removed_answer": "When relative risk is not applicable, the guideline reports outcomes using mean differences in the measured variables.",
+        "duplicate_of": "How does the WHO guideline define the use of relative risk when reporting outcomes for disclosed versus non‑disclosed HIV‑positive children?",
+        "kept_answer": "Relative risk is used to indicate whether an outcome was more or less likely in the group that had been disclosed to compared with the group that had not been disclosed to."
+      },
+      {
+        "similarity": 0.758,
+        "removed": "According to the WHO guideline, what procedure should be followed after retrieving the evidence?",
+        "removed_answer": "After retrieving the evidence, the WHO guideline specifies that the next procedure is to assess the quality of the evidence and synthesize the findings before moving on to formulate recommendations.",
+        "duplicate_of": "What are the four main steps WHO used to develop the recommendations according to the WHO guideline?",
+        "kept_answer": "The WHO guideline outlines four main steps: (i) identification of priority questions and outcomes; (ii) retrieval of the evidence; (iii) assessment of the quality of the evidence and synthesis of the findings; and (iv) formulation of recommendations, including research priorities."
+      },
+      {
+        "similarity": 0.76,
+        "removed": "What specific aspect of nutrient intake did the 2002 Joint WHO/FAO Expert Consultation update regarding carbohydrate intake?",
+        "removed_answer": "It updated guidance on carbohydrate intake as part of the population nutrient intake goals for the prevention of non‑communicable diseases.",
+        "duplicate_of": "Which WHO study group’s work in 1989 served as the basis for the 2002 Joint WHO/FAO Expert Consultation update on carbohydrate intake?",
+        "kept_answer": "The 1989 WHO Study Group on Diet, Nutrition and the Prevention of Chronic Diseases provided the basis for the 2002 update."
+      }
+    ],
+    "question_answer@0.8": [
+      {
+        "similarity": 0.81,
+        "removed": "What health outcome was investigated in relation to anthropometric measures during infancy and childhood in the systematic review?",
+        "removed_answer": "The review investigated the risk of developing obesity in later life, including childhood, adolescence, or adulthood.",
+        "duplicate_of": "How many studies were included in the systematic review that examined the association between early anthropometric measures and later obesity risk?",
+        "kept_answer": "The systematic review analyzed data from 52 studies."
+      },
+      {
+        "similarity": 0.812,
+        "removed": "How does the WHO guideline describe the consistency between short-term randomized trial effects on body weight and cohort study associations?",
+        "removed_answer": "The guideline describes the short-term effects observed in randomized controlled trials as being consistent with the associations with disease outcomes observed in prospective cohort studies.",
+        "duplicate_of": "What does the WHO guideline state about the evidence for long-term impact on body weight?",
+        "kept_answer": "The guideline notes that the evidence for long-term impact on body weight is limited but consistent with both observed short-term effects in randomized controlled trials and associations seen in prospective cohort studies."
+      },
+      {
+        "similarity": 0.812,
+        "removed": "Does the WHO guideline provide a formal definition for “mature reaction”?",
+        "removed_answer": "No, the WHO guideline indicates that the term is not defined, only suggested by the discussion in the Nostlinger study.",
+        "duplicate_of": "Which study mentioned in the WHO guideline does not define the term “mature reaction”?",
+        "kept_answer": "The study by Nostlinger (62) does not define “mature reaction”."
+      },
+      {
+        "similarity": 0.813,
+        "removed": "How does the IMCI strategy aim to improve the management of severely ill children in health facilities?",
+        "removed_answer": "It strengthens the counselling of caregivers and speeds up the referral of severely ill children.",
+        "duplicate_of": "According to the IMCI strategy, what is one of the key actions regarding treatment of childhood illnesses in outpatient settings?",
+        "kept_answer": "The strategy ensures appropriate combined treatment of all major illnesses for children presenting with illness."
+      }
+    ],
+    "question_answer@0.85": [
+      {
+        "similarity": 0.858,
+        "removed": "What comparison is made in PICOT Question 4 concerning health‑care worker training for HIV disclosure?",
+        "removed_answer": "The comparison is between assistance from health‑care workers with enhanced disclosure training and assistance from health‑care workers with standard training.",
+        "duplicate_of": "What is the intervention being compared in PICOT Question 4 about HIV disclosure?",
+        "kept_answer": "The intervention is assistance from health‑care workers who have received enhanced training on disclosure to children."
+      },
+      {
+        "similarity": 0.87,
+        "removed": "How does the evidence on dietary fibre, whole grains, vegetables, fruits and pulses intake in children and adolescents compare to that in adults according to the review?",
+        "removed_answer": "The limited evidence from the review is consistent with that observed for adults.",
+        "duplicate_of": "What type of studies were included in the systematic review concerning dietary fibre, whole grains, vegetables, fruits and pulses intake by children and adolescents?",
+        "kept_answer": "The systematic review included prospective observational studies of intake of dietary fibre, whole grains, vegetables, fruits and pulses by children and adolescents."
+      },
+      {
+        "similarity": 0.878,
+        "removed": "What areas of expertise were represented among the members of the WHO guideline development group?",
+        "removed_answer": "The group was composed of internationally recognized experts in content, methods, and regional representation.",
+        "duplicate_of": "Who were members of the guideline development group?",
+        "kept_answer": "The guideline development group comprised content experts, methodologists, and representatives of potential stakeholder groups."
+      },
+      {
+        "similarity": 0.879,
+        "removed": "What population is specified in PICOT Question 4 regarding HIV disclosure assistance?",
+        "removed_answer": "The population is HIV‑positive children who are 12 years old and under.",
+        "duplicate_of": "What population is addressed in PICOT Question 3 regarding a safe person for HIV-related discussions?",
+        "kept_answer": "The population includes HIV‑positive children aged 12 years and under and their caregivers."
+      }
+    ],
+    "question_answer@0.9": [
+      {
+        "similarity": 0.903,
+        "removed": "What two categories of products are listed as examples of supplementary foods?",
+        "removed_answer": "The WHO guideline lists fortified blended foods (corn–soy blend, wheat–soy blend) and lipid-based nutrient supplements (ready-to-use supplementary foods).",
+        "duplicate_of": "What fortified blended foods are cited as examples of supplementary foods?",
+        "kept_answer": "The examples given are corn–soy blend and wheat–soy blend."
+      },
+      {
+        "similarity": 0.904,
+        "removed": "How does the WHO guideline classify the quality of evidence for the recommendation to add a child peer-support component to disclosure supports?",
+        "removed_answer": "The WHO guideline classifies the quality of evidence for this recommendation as absent.",
+        "duplicate_of": "What is the quality of evidence rating assigned by the WHO guideline to the suggestion of including a child peer-support component?",
+        "kept_answer": "The WHO guideline rates the quality of evidence for this suggestion as absent."
+      },
+      {
+        "similarity": 0.944,
+        "removed": "What did the WHO Nutrition Guidance Expert Advisory Group Subgroup on Diet and Health consider the most effective approach to improve carbohydrate quality?",
+        "removed_answer": "They considered providing guidance on dietary fibre and food sources of carbohydrate with proven health benefits as the most effective approach.",
+        "duplicate_of": "Which WHO expert group concluded that providing guidance on dietary fibre and food sources of carbohydrate is the most effective means of addressing carbohydrate quality?",
+        "kept_answer": "The WHO Nutrition Guidance Expert Advisory Group Subgroup on Diet and Health concluded this."
+      },
+      {
+        "similarity": 0.949,
+        "removed": "What are the five approaches mentioned for achieving the dietary goals in the WHO guideline?",
+        "removed_answer": "The guideline lists behaviour change interventions, fiscal policies, regulation of marketing of foods and beverages, product labelling schemes, and reformulation of manufactured products as ways to achieve the dietary goals.",
+        "duplicate_of": "What are the approaches mentioned for achieving the dietary goals in the WHO guideline?",
+        "kept_answer": "The dietary goals can be achieved through behaviour change interventions, fiscal policies, regulation of marketing of foods and beverages, product labelling schemes, and reformulation of manufactured products."
+      }
+    ],
+    "question_answer@0.95": [
+      {
+        "similarity": 0.991,
+        "removed": "How does the WHO guideline describe the feasibility of the approaches to achieve dietary goals?",
+        "removed_answer": "The guideline states that feasibility varies depending on the approach used.",
+        "duplicate_of": "How does the WHO guideline describe the feasibility of the different approaches to achieving dietary goals?",
+        "kept_answer": "The guideline states that feasibility varies depending on the approach used."
+      },
+      {
+        "similarity": 0.993,
+        "removed": "According to the WHO guideline, how should the dietary recommendations be integrated into health promotion activities?",
+        "removed_answer": "The guideline advises that, regardless of the specific mode of implementation, the recommendations can be incorporated into existing activities designed to promote healthy diets.",
+        "duplicate_of": "According to the WHO guideline, how should the dietary recommendations be integrated into health promotion activities?",
+        "kept_answer": "Regardless of the specific mode of implementation, the recommendations can be incorporated into existing activities designed to promote healthy diets."
+      }
+    ]
+  },
+  "judge_reliability": null,
+  "diversity": {
+    "types_before": {
+      "factual": 169,
+      "definitional": 33,
+      "procedural": 20,
+      "unanswerable": 10
+    },
+    "types_after": {
+      "factual": 166,
+      "definitional": 31,
+      "procedural": 19,
+      "unanswerable": 10
+    },
+    "first_words_before": {
+      "questions": 232,
+      "unique_first_words": 19,
+      "unique_first_two_words": 107,
+      "top_first_word": "what",
+      "top_first_word_share": 0.4612,
+      "first_word_distribution": {
+        "what": 107,
+        "according": 38,
+        "how": 29,
+        "which": 21,
+        "why": 6,
+        "in": 6,
+        "who": 4,
+        "when": 4,
+        "where": 3,
+        "at": 3,
+        "did": 2,
+        "is": 2,
+        "over": 1,
+        "does": 1,
+        "within": 1
+      },
+      "first_two_words_distribution": {
+        "according to": 38,
+        "how does": 17,
+        "what is": 16,
+        "what does": 14,
+        "what age": 6,
+        "what specific": 5,
+        "what are": 5,
+        "how many": 5,
+        "what was": 4,
+        "at what": 3,
+        "what did": 3,
+        "what population": 3,
+        "what health": 3,
+        "how did": 3,
+        "which who": 3
+      }
+    },
+    "first_words_after": {
+      "questions": 226,
+      "unique_first_words": 19,
+      "unique_first_two_words": 107,
+      "top_first_word": "what",
+      "top_first_word_share": 0.4602,
+      "first_word_distribution": {
+        "what": 104,
+        "according": 37,
+        "how": 27,
+        "which": 21,
+        "why": 6,
+        "in": 6,
+        "who": 4,
+        "when": 4,
+        "where": 3,
+        "at": 3,
+        "did": 2,
+        "is": 2,
+        "over": 1,
+        "does": 1,
+        "within": 1
+      },
+      "first_two_words_distribution": {
+        "according to": 37,
+        "what is": 16,
+        "how does": 15,
+        "what does": 14,
+        "what age": 6,
+        "what specific": 5,
+        "how many": 5,
+        "what was": 4,
+        "what are": 4,
+        "at what": 3,
+        "what population": 3,
+        "what health": 3,
+        "how did": 3,
+        "which who": 3,
+        "where can": 2
+      }
+    }
+  }
+}

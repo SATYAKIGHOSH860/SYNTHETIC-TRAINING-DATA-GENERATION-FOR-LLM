@@ -1,0 +1,52 @@
+{
+  "n": 40,
+  "min_quality_score": 4,
+  "min_criterion_scores": {
+    "groundedness": 2,
+    "specificity": 1,
+    "completeness": 1
+  },
+  "criteria": {
+    "groundedness": {
+      "kappa": 0.0,
+      "weighted_kappa": 0.0,
+      "agreement": 0.25,
+      "interpretation": "weak"
+    },
+    "specificity": {
+      "kappa": 0.0,
+      "weighted_kappa": 0.0,
+      "agreement": 0.05,
+      "interpretation": "weak"
+    },
+    "completeness": {
+      "kappa": 0.0,
+      "weighted_kappa": 0.0,
+      "agreement": 0.15,
+      "interpretation": "weak"
+    }
+  },
+  "decision": {
+    "kappa": 0.0,
+    "agreement": 0.25,
+    "interpretation": "weak",
+    "confusion_matrix": [
+      [
+        10,
+        30
+      ],
+      [
+        0,
+        0
+      ]
+    ]
+  },
+  "mean_total_human": 3.0,
+  "mean_total_judge": 5.55,
+  "warnings": [
+    "Every labelled pair has the same human scores (1/1/1). Kappa cannot measure agreement when one rater never varies, so these results say nothing about the judge. Score each pair on its own merits."
+  ],
+  "labelled": 40,
+  "total_items": 40,
+  "labeller": ""
+}

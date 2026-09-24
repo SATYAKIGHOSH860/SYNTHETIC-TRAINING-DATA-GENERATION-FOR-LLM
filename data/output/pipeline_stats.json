@@ -1,0 +1,261 @@
+{
+  "generated_at": "2026-09-24T13:59:29+00:00",
+  "raw_count": 242,
+  "raw_answerable": 232,
+  "raw_unanswerable": 10,
+  "validated_count": 232,
+  "final_count": 226,
+  "pass_rate": 0.9587,
+  "answerable_pass_rate": 0.9569,
+  "rejected_count": 10,
+  "duplicates_removed": 6,
+  "duplicate_rate": 0.0259,
+  "final_share_of_raw": 0.9339,
+  "unanswerable_generated": 10,
+  "unanswerable_kept": 10,
+  "unanswerable_count": 10,
+  "average_quality_score": 5.995,
+  "average_quality_score_all_judged": 5.922,
+  "average_subscores_all_judged": {
+    "groundedness": 1.957,
+    "specificity": 1.991,
+    "completeness": 1.974
+  },
+  "judge_failures": 0,
+  "per_source_counts": {
+    "Bookshelf_NBK593396.pdf": 86,
+    "Bookshelf_NBK487902.pdf": 84,
+    "Bookshelf_NBK304307.pdf": 56
+  },
+  "per_source_raw_counts": {
+    "Bookshelf_NBK593396.pdf": 93,
+    "Bookshelf_NBK487902.pdf": 88,
+    "Bookshelf_NBK304307.pdf": 61
+  },
+  "question_type_distribution": {
+    "factual": 166,
+    "definitional": 31,
+    "procedural": 19,
+    "unanswerable": 10
+  },
+  "question_type_distribution_raw": {
+    "factual": 173,
+    "definitional": 38,
+    "procedural": 21,
+    "unanswerable": 10
+  },
+  "score_distribution": {
+    "0": 0,
+    "1": 0,
+    "2": 0,
+    "3": 2,
+    "4": 3,
+    "5": 6,
+    "6": 221
+  },
+  "diversity_before_dedup": {
+    "questions": 232,
+    "unique_first_words": 19,
+    "unique_first_two_words": 107,
+    "top_first_word": "what",
+    "top_first_word_share": 0.4612,
+    "first_word_distribution": {
+      "what": 107,
+      "according": 38,
+      "how": 29,
+      "which": 21,
+      "why": 6,
+      "in": 6,
+      "who": 4,
+      "when": 4,
+      "where": 3,
+      "at": 3,
+      "did": 2,
+      "is": 2,
+      "over": 1,
+      "does": 1,
+      "within": 1
+    },
+    "first_two_words_distribution": {
+      "according to": 38,
+      "how does": 17,
+      "what is": 16,
+      "what does": 14,
+      "what age": 6,
+      "what specific": 5,
+      "what are": 5,
+      "how many": 5,
+      "what was": 4,
+      "at what": 3,
+      "what did": 3,
+      "what population": 3,
+      "what health": 3,
+      "how did": 3,
+      "which who": 3
+    }
+  },
+  "diversity": {
+    "questions": 226,
+    "unique_first_words": 19,
+    "unique_first_two_words": 107,
+    "top_first_word": "what",
+    "top_first_word_share": 0.4602,
+    "first_word_distribution": {
+      "what": 104,
+      "according": 37,
+      "how": 27,
+      "which": 21,
+      "why": 6,
+      "in": 6,
+      "who": 4,
+      "when": 4,
+      "where": 3,
+      "at": 3,
+      "did": 2,
+      "is": 2,
+      "over": 1,
+      "does": 1,
+      "within": 1
+    },
+    "first_two_words_distribution": {
+      "according to": 37,
+      "what is": 16,
+      "how does": 15,
+      "what does": 14,
+      "what age": 6,
+      "what specific": 5,
+      "how many": 5,
+      "what was": 4,
+      "what are": 4,
+      "at what": 3,
+      "what population": 3,
+      "what health": 3,
+      "how did": 3,
+      "which who": 3,
+      "where can": 2
+    }
+  },
+  "config": {
+    "model": {
+      "provider": "groq",
+      "id": "openai/gpt-oss-120b",
+      "judge_id": "qwen/qwen3.8-27b",
+      "generation_temperature": 0.4,
+      "judge_temperature": 0.0,
+      "reasoning_effort": "low",
+      "generation_max_tokens": 1024,
+      "judge_max_tokens": 512,
+      "max_retries": 3,
+      "request_delay_seconds": 1.0,
+      "request_timeout_seconds": 90,
+      "requests_per_minute": 30,
+      "tokens_per_minute": 8000
+    },
+    "domain": {
+      "name": "WHO clinical guidelines",
+      "system_role": "an expert medical educator creating training data from WHO clinical guidelines"
+    },
+    "paths": {
+      "raw_dir": "data/raw",
+      "cache_dir": "data/cache",
+      "output_dir": "data/output",
+      "uploads_dir": "data/uploads"
+    },
+    "ingest": {
+      "chunk_size": 600,
+      "chunk_overlap": 80,
+      "min_chunk_chars": 100,
+      "min_pdf_chars": 200,
+      "filter_boilerplate": true,
+      "max_citation_markers": 3,
+      "max_author_initials": 2,
+      "max_legal_markers": 1,
+      "max_toc_entries": 4,
+      "max_capitalised_ratio": 0.5,
+      "max_numeric_ratio": 0.4
+    },
+    "generate": {
+      "questions_per_chunk": 3,
+      "question_types": [
+        "factual",
+        "definitional",
+        "procedural"
+      ],
+      "unanswerable_ratio": 0.1,
+      "abstention_answer": "This information is not available in the provided document.",
+      "source_reference": "the WHO guideline",
+      "min_question_chars": 15,
+      "min_answer_chars": 25
+    },
+    "validate": {
+      "min_quality_score": 4,
+      "min_criterion_scores": {
+        "groundedness": 2,
+        "specificity": 1,
+        "completeness": 1
+      },
+      "passage_chars": 800,
+      "group_by_chunk": true
+    },
+    "deduplicate": {
+      "embedding_model": "all-MiniLM-L6-v2",
+      "embed": "question_answer",
+      "similarity_threshold": 0.9,
+      "require_same_numbers": true,
+      "batch_size": 64
+    },
+    "export": {
+      "chatml_include_context": true
+    },
+    "agreement": {
+      "sample_size": 40,
+      "seed": 42
+    },
+    "run": {
+      "max_chunks": 100,
+      "checkpoint_every": 25,
+      "seed": 42
+    },
+    "web": {
+      "max_chunks_per_upload": 30,
+      "max_upload_mb": 25,
+      "max_files_per_job": 3,
+      "show_all_upload_jobs": true
+    }
+  },
+  "run": {
+    "pdf_dir": "C:\\Users\\KIIT\\Desktop\\CVS\\CV PROJECTS\\SYNTHETIC TRAINING DATA GENERATION FOR LLM\\data\\raw",
+    "pdf_files": [
+      "Bookshelf_NBK304307.pdf",
+      "Bookshelf_NBK487902.pdf",
+      "Bookshelf_NBK593396.pdf"
+    ],
+    "pages_loaded": 228,
+    "chunks_total": 1092,
+    "chunks_processed": 100,
+    "max_chunks": 100,
+    "chunks_failed": 0,
+    "chunks_skipped_no_content": 22,
+    "chunks_fully_filtered": 0,
+    "chunks_carried_over": 0,
+    "pairs_by_prompt_version": {
+      "gen-v2": 158,
+      "gen-v3": 84
+    },
+    "generator_model": "openai/gpt-oss-120b",
+    "judge_model": "qwen/qwen3.8-27b",
+    "api_calls": 199,
+    "tokens_generation": 94679,
+    "tokens_validation": 78372,
+    "stage_seconds": {
+      "ingest": 63.3,
+      "deduplicate": 3.1,
+      "generate": 0.0,
+      "validate": 0.0
+    },
+    "wall_seconds": 66.7,
+    "resumed": true,
+    "refilled": false,
+    "warnings": []
+  }
+}

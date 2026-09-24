@@ -1,0 +1,22 @@
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f3f2ee"
+textColor = "#0b0b0b"
+font = "sans serif"
+
+[server]
+runOnSave = false
+# The source watcher walks every loaded module; with transformers loaded it triggers
+# optional torchvision imports and floods the log with harmless tracebacks.
+fileWatcherType = "none"
+# Per-file upload cap shown in the uploader. Keep equal to web.max_upload_mb in
+# config.yaml, which the app enforces with its own explanatory message.
+maxUploadSize = 25
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

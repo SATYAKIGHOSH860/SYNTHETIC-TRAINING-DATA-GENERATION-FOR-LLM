@@ -1,0 +1,20 @@
+# Secrets — .env holds a live API key and must never be committed
+.env
+
+# Environments and caches
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Working files: checkpoints, server log/PID, and visitors' upload jobs
+data/cache/
+data/uploads/
+
+# data/output/ IS committed on purpose: the deployed dashboard shows this finished
+# run (it cannot re-run the pipeline in public mode). Re-running main.py rewrites it.
+
+# Local Streamlit secrets (the theme in config.toml is safe to commit)
+.streamlit/*
+!.streamlit/config.toml
