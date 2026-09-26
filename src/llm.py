@@ -302,8 +302,9 @@ def _classify_fatal(exc: Exception, model_id: str) -> str | None:
         )
     if (name == "RateLimitError" or status == 429) and ("per day" in text or "(tpd)" in text or "(rpd)" in text):
         return (
-            f"The daily Groq quota for '{model_id}' is used up. Progress is checkpointed: "
-            "re-run with --resume after the quota resets (or use a key with a higher tier)."
+            f"The daily Groq quota for '{model_id}' is used up. Progress is checkpointed: after the quota "
+            "resets, press Generate dataset again in the dashboard (or run main.py with --resume) to continue, "
+            "or use a key with a higher tier."
         )
     if status == 413 or "request too large" in text:
         return f"Request too large for '{model_id}'. Lower validate.passage_chars or ingest.chunk_size."

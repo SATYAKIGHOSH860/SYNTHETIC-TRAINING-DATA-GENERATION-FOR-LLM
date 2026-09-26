@@ -22,11 +22,15 @@ import pytest  # noqa: E402
 from langchain_core.documents import Document  # noqa: E402
 
 from src import agreement, generate, llm, validate  # noqa: E402
-from src.config import CONFIG, ConfigError, is_public, require_api_key, with_overrides  # noqa: E402
+from src.config import (  # noqa: E402
+    CONFIG, PROJECT_ROOT, ConfigError, is_public, project_relative, require_api_key, with_overrides,
+)
 from src.deduplicate import deduplicate, diversity_stats, find_duplicates  # noqa: E402
-from src.export import EXPORT_FIELDS, clean_pairs, load_jsonl, save_jsonl, to_chatml_format  # noqa: E402
+from src.export import (  # noqa: E402
+    EXPORT_FIELDS, archive_stale_files, clean_pairs, load_jsonl, save_jsonl, to_chatml_format,
+)
 from src.ingest import boilerplate_reason, chunk_documents, clean_page_text, select_chunks  # noqa: E402
-from src.uploads import UploadedPDF, safe_filename, validate_uploads  # noqa: E402
+from src.uploads import UploadedPDF, replace_pdfs, safe_filename, validate_uploads  # noqa: E402
 
 FLOORS = {"groundedness": 2, "specificity": 1, "completeness": 1}
 
@@ -463,13 +467,48 @@ def test_upload_validation_rejects_too_large_file_and_non_pdf():
     assert any("MB" in e for e in validate_uploads([too_big]))
     assert any("not a PDF" in e for e in validate_uploads([not_pdf]))
     assert any("content is not a PDF" in e for e in validate_uploads([renamed]))
-    assert any("Too many files" in e for e in validate_uploads([ok] * (CONFIG.web.max_files_per_job + 1)))
+    assert any("Too many files" in e for e in validate_uploads([ok] * (CONFIG.web.max_files_per_run + 1)))
     assert validate_uploads([]) == ["Please upload at least one PDF."]
 
 
 def test_safe_filename_strips_paths():
     assert safe_filename("..\\..\\evil/../x.pdf") == "x.pdf"
     assert safe_filename("my file (1).pdf") == "my file _1_.pdf"
+
+
+def test_upload_replaces_the_previous_runs_pdfs_only(tmp_path):
+    # One pipeline: the input folder must hold exactly the latest upload, nothing from the run before.
+    folder = tmp_path / "raw"
+    folder.mkdir()
+    (folder / "old.pdf").write_bytes(b"%PDF-1.4 old")
+    (folder / "notes.txt").write_text("not a PDF, left alone", encoding="utf-8")
+    pdf = b"%PDF-1.4 new"
+    replace_pdfs([UploadedPDF("a.pdf", pdf), UploadedPDF("A.pdf", pdf), UploadedPDF("../evil/b.pdf", pdf)], folder)
+    assert {p.name for p in folder.glob("*.pdf")} == {"a.pdf", "A_2.pdf", "b.pdf"}
+    assert (folder / "notes.txt").is_file() and not (folder / "old.pdf").exists()
+
+
+def test_new_dataset_moves_old_labels_aside_but_identical_rerun_keeps_them(tmp_path):
+    scores = {"groundedness": 2, "specificity": 2, "completeness": 2}
+    old = [{"id": "p1", "answer": "A one.", "scores": scores}, {"id": "p2", "answer": "A two.", "scores": scores}]
+    save_jsonl(old, tmp_path / "judged_pairs.jsonl")
+    labels = {"items": [{"id": "p1", "groundedness": 2, "specificity": 1, "completeness": 2}]}
+    (tmp_path / "human_labels.json").write_text(json.dumps(labels), encoding="utf-8")
+    (tmp_path / "experiments.md").write_text("tables", encoding="utf-8")
+
+    assert archive_stale_files(tmp_path, old) is None, "an identical re-run must keep the labels in place"
+    assert (tmp_path / "human_labels.json").is_file()
+
+    # Shared result files record project-relative paths, never this machine's folder layout.
+    assert project_relative(PROJECT_ROOT / "data" / "raw") == "data/raw"
+    assert project_relative(tmp_path) == str(tmp_path)
+
+    moved = archive_stale_files(tmp_path, [{"id": "p9", "answer": "New.", "scores": scores}])
+    assert moved is not None
+    folder, names = moved
+    assert set(names) == {"human_labels.json", "experiments.md"}
+    assert not (tmp_path / "human_labels.json").exists()
+    assert json.loads((folder / "human_labels.json").read_text(encoding="utf-8")) == labels, "gold labels are kept"
 
 
 # ---------------------------------------------------------------------------

@@ -215,6 +215,47 @@ def push_to_hub(pairs: list[dict[str, Any]], repo_id: str, private: bool = True,
     return url
 
 
+def _judged_signature(pairs: list[dict[str, Any]]) -> dict[str, str]:
+    """id -> answer and judge scores: what the agreement and experiment files were computed from."""
+    return {p["id"]: json.dumps([p.get("answer"), p.get("scores")], sort_keys=True, ensure_ascii=False)
+            for p in pairs if p.get("id")}
+
+
+def archive_stale_files(output_dir: str | Path, judged: list[dict[str, Any]]) -> tuple[Path, list[str]] | None:
+    """Before a run writes its dataset, move aside files that describe a different, earlier dataset.
+
+    A run rewrites the dataset and evidence files, but human_labels.json,
+    judge_agreement.json and experiments.* belong to the dataset they were made
+    from. human_labels.json holds a person's scores (gold data), so nothing is
+    ever deleted: stale files move to ``output_dir/previous/<UTC time>/``.
+    Labels are stale when any labelled pair is missing from the new run; the
+    agreement and experiment files when the judged pairs or their scores
+    changed. An identical re-run (same pairs, same scores) moves nothing.
+    Returns (archive folder, moved file names), or None.
+    """
+    out = resolve_path(output_dir)
+    new = _judged_signature(judged)
+    old_path = out / "judged_pairs.jsonl"
+    old = _judged_signature(load_jsonl(old_path)) if old_path.is_file() else {}
+    stale: list[str] = []
+    labels = out / "human_labels.json"
+    if labels.is_file():
+        with open(labels, "r", encoding="utf-8") as fh:
+            items = json.load(fh).get("items", [])
+        if any(item.get("id") not in new for item in items):
+            stale += ["human_labels.json", "judge_agreement.json"]
+    if old != new:
+        stale += ["judge_agreement.json", "experiments.json", "experiments.md"]
+    moved = [name for name in dict.fromkeys(stale) if (out / name).is_file()]
+    if not moved:
+        return None
+    dest = out / "previous" / datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in moved:
+        os.replace(out / name, dest / name)
+    return dest, moved
+
+
 def write_outputs(
     output_dir: str | Path,
     *,

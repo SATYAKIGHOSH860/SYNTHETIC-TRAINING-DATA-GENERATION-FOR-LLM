@@ -1,13 +1,13 @@
-"""Validation and storage for PDFs uploaded through the web interface.
+"""Validation and storage for PDFs uploaded through the dashboard.
 
-Kept free of streamlit so it can be unit-tested and so the UI holds no logic
-beyond presentation.
+Uploaded PDFs are the pipeline's only input: each upload becomes the input
+folder of the next run. Kept free of streamlit so it can be unit-tested and so
+the UI holds no logic beyond presentation.
 """
 
 from __future__ import annotations
 
 import re
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,7 +25,7 @@ class UploadedPDF:
 def validate_uploads(files: list[UploadedPDF], cfg: Config = CONFIG) -> list[str]:
     """Return a list of human-readable problems; empty means the upload is acceptable.
 
-    Checks: at least one file, at most ``web.max_files_per_job`` files, each
+    Checks: at least one file, at most ``web.max_files_per_run`` files, each
     under ``web.max_upload_mb``, a .pdf extension, and real PDF content (the
     file must start with the %PDF- signature, so a renamed .docx or image is
     rejected rather than failing obscurely inside the parser).
@@ -34,8 +34,8 @@ def validate_uploads(files: list[UploadedPDF], cfg: Config = CONFIG) -> list[str
     limit_mb = cfg.web.max_upload_mb
     if not files:
         return ["Please upload at least one PDF."]
-    if len(files) > cfg.web.max_files_per_job:
-        errors.append(f"Too many files: {len(files)} uploaded, the limit is {cfg.web.max_files_per_job} per job.")
+    if len(files) > cfg.web.max_files_per_run:
+        errors.append(f"Too many files: {len(files)} uploaded, the limit is {cfg.web.max_files_per_run} per run.")
     for f in files:
         size_mb = len(f.data) / (1024 * 1024)
         if not f.name.lower().endswith(".pdf"):
@@ -56,18 +56,18 @@ def safe_filename(name: str) -> str:
     return base or "upload.pdf"
 
 
-def new_job_dir(cfg: Config = CONFIG) -> tuple[str, Path]:
-    """Create ``data/uploads/<uuid>/`` so concurrent users never share files."""
-    job_id = uuid.uuid4().hex
-    job_dir = resolve_path(cfg.paths.uploads_dir) / job_id
-    (job_dir / "pdfs").mkdir(parents=True, exist_ok=False)
-    return job_id, job_dir
+def replace_pdfs(files: list[UploadedPDF], pdf_dir: str | Path) -> Path:
+    """Make ``pdf_dir`` hold exactly these PDFs (safe, unique names); return the folder.
 
-
-def save_uploads(files: list[UploadedPDF], job_dir: Path) -> Path:
-    """Write the uploaded PDFs into the job folder; return the PDF directory."""
-    pdf_dir = job_dir / "pdfs"
+    Why remove the PDFs already there: the pipeline processes every PDF in its
+    input folder, and each upload starts a new run, so the previous run's PDFs
+    must not slip into it. Only .pdf files are touched.
+    """
+    pdf_dir = resolve_path(pdf_dir)
     pdf_dir.mkdir(parents=True, exist_ok=True)
+    for old in pdf_dir.iterdir():
+        if old.is_file() and old.suffix.lower() == ".pdf":
+            old.unlink()
     used: set[str] = set()
     for f in files:
         name = safe_filename(f.name)

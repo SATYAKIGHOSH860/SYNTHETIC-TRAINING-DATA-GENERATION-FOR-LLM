@@ -8,9 +8,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Working files: checkpoints, server log/PID, and visitors' upload jobs
+# Working files: checkpoints, server log/PID, and public visitors' own folders
 data/cache/
 data/uploads/
+
+# Input PDFs are whatever was last uploaded in the dashboard; they can be private, so never commit them
+data/raw/*
+!data/raw/.gitkeep
 
 # data/output/ IS committed on purpose: the deployed dashboard shows this finished
 # run (it cannot re-run the pipeline in public mode). Re-running main.py rewrites it.

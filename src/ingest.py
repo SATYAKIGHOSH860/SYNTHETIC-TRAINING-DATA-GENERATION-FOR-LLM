@@ -113,7 +113,8 @@ def clean_page_text(text: str, running_headers: set[str] | frozenset[str] = froz
 def list_pdfs(data_dir: str | Path) -> list[Path]:
     data_dir = resolve_path(data_dir)
     if not data_dir.is_dir():
-        raise FileNotFoundError(f"PDF folder does not exist: {data_dir}")
+        raise FileNotFoundError(f"PDF folder does not exist: {data_dir}. Upload PDFs in the dashboard "
+                                "(Pipeline overview, Upload PDFs) or create the folder and copy PDFs into it.")
     return sorted(p for p in data_dir.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
 
 
@@ -136,7 +137,8 @@ def load_pdfs(
     pdfs = list_pdfs(data_dir)
     if not pdfs:
         raise FileNotFoundError(
-            f"No PDF files found in {resolve_path(data_dir)}. Add guideline PDFs there and re-run."
+            f"No PDF files found in {resolve_path(data_dir)}. Upload PDFs in the dashboard (Pipeline "
+            "overview, Upload PDFs), or copy guideline PDFs into that folder, and run again."
         )
     warn = warnings if warnings is not None else []
     docs: list[Document] = []

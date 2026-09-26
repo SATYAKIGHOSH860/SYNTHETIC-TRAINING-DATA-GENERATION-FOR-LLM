@@ -121,18 +121,19 @@ run:
   seed: 42
 
 web:
-  max_chunks_per_upload: 30         # demo mode cap — see Task 10
-  max_upload_mb: 25
-  max_files_per_job: 3
-  # Output tab: list every upload job saved on this machine (true), or only the
-  # current browser session's job (false). Public mode always shows only the
-  # session's own job, so visitors cannot download each other's results.
-  show_all_upload_jobs: true
+  # Limits for the dashboard's "Upload PDFs" section (Pipeline overview tab),
+  # the one place a run starts. Uploaded PDFs become the run's input: data/raw/
+  # when private, the visitor's own folder under data/uploads/ when public.
+  max_upload_mb: 25                 # per file; keep .streamlit/config.toml maxUploadSize in step
+  max_files_per_run: 3
+  # Public mode caps a visitor's run at this many chunks (about 5-8 minutes on
+  # the free API tier). Privately, the chunk box starts at run.max_chunks.
+  public_max_chunks: 30
   # Public mode makes the dashboard safe to put on the internet (e.g. Streamlit
-  # Community Cloud). The finished results stay viewable and downloadable, but
-  # nobody can re-run the pipeline, change the human labels or use the server's
-  # API key: uploads need the visitor's own Groq key, held in their browser
-  # session only.
+  # Community Cloud). Visitors see the committed example dataset, and each
+  # visitor's own upload runs in a private folder of theirs, so nobody can
+  # replace what others see, change the human labels or use the server's API
+  # key: a run needs the visitor's own Groq key, held in their session only.
   #   auto  - public unless the server listens only on this computer (the
   #           desktop launcher starts it that way) and the page is opened on
   #           this computer, so a deployment is safe even if nobody remembers

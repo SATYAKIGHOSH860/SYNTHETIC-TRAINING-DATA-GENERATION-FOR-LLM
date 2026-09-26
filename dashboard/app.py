@@ -1,8 +1,10 @@
-"""Streamlit dashboard: explore the generated dataset and generate new ones from uploaded PDFs.
+"""Streamlit dashboard: upload PDFs, run the pipeline, explore and download the dataset.
 
 Run from the project root:
-    streamlit run dashboard/app.py
+    streamlit run dashboard/app.py --server.address localhost
 
+There is one pipeline and one dataset: the "Upload PDFs" section of the
+Pipeline overview tab starts every run, and every tab shows that run's results.
 This file only presents results. Every piece of pipeline logic lives in src/
 and is called from here, never reimplemented.
 """
@@ -18,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -45,15 +48,38 @@ except Exception as exc:  # config.yaml missing or invalid
 
 from src import agreement  # noqa: E402
 from src.export import DISCLAIMER, load_jsonl  # noqa: E402
+from src.ingest import list_pdfs  # noqa: E402
 from src.llm import redact  # noqa: E402
 from src.pipeline import PipelineCancelled, PipelineError, run_pipeline  # noqa: E402
-from src.uploads import UploadedPDF, new_job_dir, save_uploads, validate_uploads  # noqa: E402
+from src.uploads import UploadedPDF, replace_pdfs, validate_uploads  # noqa: E402
 
-OUTPUT_DIR = resolve_path(CONFIG.paths.output_dir)
-# Public mode (config web.public_mode): results are read-only, no pipeline runs, no labelling, and
-# uploads use the visitor's own key only. "auto" turns it on unless the server listens only on
-# localhost and this session's page was opened from localhost.
+# Public mode (config web.public_mode): visitors see the example dataset, runs need the visitor's own
+# key and stay in the visitor's own folder, and the human labels are read-only. "auto" turns it on
+# unless the server listens only on localhost and this session's page was opened from localhost.
 PUBLIC = is_public(CONFIG.web.public_mode, st.get_option("server.address"), st.context.headers.get("Host"))
+SHOWCASE_DIR = resolve_path(CONFIG.paths.output_dir)
+
+
+def workspace() -> dict[str, Any]:
+    """Where this session's run reads its PDFs and writes its results.
+
+    One pipeline, one dataset per workspace. Private: the project folders (data/raw -> data/output),
+    so every tab and the command line work on the same dataset. Public: a folder of the visitor's
+    own under data/uploads/, so a visitor's run never replaces what other visitors see.
+    """
+    if not PUBLIC:
+        return {"key": "main", "pdfs": resolve_path(CONFIG.paths.raw_dir),
+                "cache": resolve_path(CONFIG.paths.cache_dir), "output": SHOWCASE_DIR}
+    visitor = st.session_state.setdefault("visitor_id", uuid.uuid4().hex)
+    root = resolve_path(CONFIG.paths.uploads_dir) / visitor
+    return {"key": visitor, "pdfs": root / "pdfs", "cache": root / "cache", "output": root / "output"}
+
+
+WORK = workspace()
+OWN_RESULTS = (WORK["output"] / "pipeline_stats.json").is_file()
+# A public visitor sees the committed example dataset until their own run has finished.
+SHOWING_EXAMPLE = PUBLIC and not OWN_RESULTS
+OUTPUT_DIR = SHOWCASE_DIR if SHOWING_EXAMPLE else WORK["output"]
 
 # ---------------------------------------------------------------------------
 # Visual system: validated categorical slots (dataviz reference palette),
@@ -245,26 +271,25 @@ def read_bytes(path: Path) -> bytes:
 
 # Every file a run can produce, in the order a reader needs them:
 # (file name, title, what it contains, how it is created if missing)
+RUN_HOW = "Generate dataset (Pipeline overview, Upload PDFs)"
 OUTPUT_CATALOG = (
     ("synthetic_dataset.jsonl", "Final dataset (JSONL)",
-     "The clean training pairs: question, answer, source, page, type, answerable, quality score.",
-     "python main.py"),
+     "The clean training pairs: question, answer, source, page, type, answerable, quality score.", RUN_HOW),
     ("synthetic_dataset.csv", "Final dataset (CSV, opens in Excel)",
-     "The same pairs as a spreadsheet, for reading and sharing.", "python main.py"),
+     "The same pairs as a spreadsheet, for reading and sharing.", RUN_HOW),
     ("synthetic_dataset_chatml.jsonl", "Fine-tuning format (ChatML)",
      "Each pair as chat messages with its source passage, ready for TRL, Axolotl or Hugging Face trainers.",
-     "python main.py"),
+     RUN_HOW),
     ("judged_pairs.jsonl", "Full audit trail",
      "Every judged pair with its sub-scores, the judge's note and its status: kept, rejected or duplicate.",
-     "python main.py"),
-    ("rejected_pairs.jsonl", "Rejected pairs", "Pairs the judge rejected, each with the judge's reason.",
-     "python main.py"),
+     RUN_HOW),
+    ("rejected_pairs.jsonl", "Rejected pairs", "Pairs the judge rejected, each with the judge's reason.", RUN_HOW),
     ("duplicate_pairs.jsonl", "Duplicates removed",
-     "Each removed pair beside the pair it duplicated, with the similarity score.", "python main.py"),
+     "Each removed pair beside the pair it duplicated, with the similarity score.", RUN_HOW),
     ("unanswerable_pairs.jsonl", "Unanswerable (abstention) pairs",
-     "Questions the source does not answer, with the verification verdict.", "python main.py"),
+     "Questions the source does not answer, with the verification verdict.", RUN_HOW),
     ("pipeline_stats.json", "Run statistics", "Every count and distribution, plus the exact settings used.",
-     "python main.py"),
+     RUN_HOW),
     ("human_labels.json", "Your human labels", "The 40-pair blind sample with the scores you entered.",
      "the Judge reliability tab"),
     ("judge_agreement.json", "Judge vs human agreement", "Cohen's kappa results, written when all pairs are labelled.",
@@ -321,11 +346,34 @@ def row_count(folder: Path, name: str) -> str:
     return ""
 
 
+def file_available(folder: Path, name: str) -> bool:
+    return (folder / ("synthetic_dataset.jsonl" if name == "synthetic_dataset.csv" else name)).is_file()
+
+
+def file_meta(folder: Path, name: str) -> str:
+    source = folder / ("synthetic_dataset.jsonl" if name == "synthetic_dataset.csv" else name)
+    updated = time.strftime("%d %b %Y, %H:%M", time.localtime(source.stat().st_mtime))
+    size = "" if name == "synthetic_dataset.csv" else human_size(source.stat().st_size)
+    return " · ".join(part for part in (row_count(folder, name), size, f"updated {updated}") if part)
+
+
+def download(label: str, folder: Path, name: str, file_name: str, key: str) -> None:
+    """A download button whose bytes are read (or built) only when it is clicked."""
+    st.download_button(label, data=lambda f=folder, n=name: output_bytes(f, n), file_name=file_name,
+                       mime=MIME.get(Path(name).suffix, "application/octet-stream"), key=key,
+                       on_click="ignore", width="stretch", icon=":material/download:")
+
+
+def zip_stamp(folder: Path) -> str:
+    stats = folder / "pipeline_stats.json"
+    return time.strftime("%Y%m%d", time.localtime(stats.stat().st_mtime)) if stats.is_file() else "latest"
+
+
 def no_results_message() -> None:
     st.markdown(
-        '<div class="empty"><b>No results yet.</b> The pipeline has not been run, so there is nothing to show '
-        'in this tab. From the project root run <code>python main.py</code> (add <code>--max-chunks 5</code> '
-        'for a quick test), then refresh this page. You can also try the <b>Generate from your PDFs</b> tab.</div>',
+        '<div class="empty"><b>No results yet.</b> No dataset has been generated, so there is nothing to show '
+        'in this tab. Open the <b>Pipeline overview</b> tab, upload one or more PDFs under <b>Upload PDFs</b> '
+        'and press <b>Generate dataset</b>. Every tab fills in when the run finishes.</div>',
         unsafe_allow_html=True,
     )
 
@@ -372,6 +420,7 @@ STAGE_LABELS = {
 }
 STAGE_WEIGHTS = {"queued": (0, 0), "ingesting": (0, 3), "generating": (3, 50), "validating": (53, 42),
                  "deduplicating": (95, 3), "exporting": (98, 2), "done": (100, 0)}
+STOPPABLE_STAGES = ("queued", "ingesting", "generating", "validating")
 
 
 def overall_progress(job: dict[str, Any]) -> float:
@@ -402,8 +451,10 @@ def make_progress(job: dict[str, Any]):
     with finished work checkpointed and no partial dataset written.
     """
     def progress(current: int, total: int, stage: str) -> None:
-        # "done" is reported after every file is written: too late to cancel, and nothing left to stop.
-        if job["stop"].is_set() and stage != "done":
+        # Stop is honoured up to the end of judging. After that, validation has already rewritten
+        # rejected_pairs.jsonl and the last stages (dedup, export) take seconds, so the run finishes
+        # them rather than leave new evidence files beside an old dataset.
+        if job["stop"].is_set() and stage in STOPPABLE_STAGES:
             raise PipelineCancelled("Stopped by user")
         job.update(stage=stage, current=current, total=max(total, 1))
     return progress
@@ -443,90 +494,197 @@ work_tracker()
 
 
 @st.cache_resource
-def pipeline_runner() -> dict[str, Any]:
-    """The single full-pipeline run (data/raw -> data/output), shared by every browser tab."""
-    return {"status": "idle", "stage": "queued", "current": 0, "total": 1, "started": None,
-            "finished": None, "error": None, "stats": None, "stop": threading.Event(), "chunks": None}
+def run_registry() -> dict[str, Any]:
+    """Runs by workspace key: "main" when private, one per visitor when public.
+
+    Runs happen in background threads, so a click elsewhere in the app (which reruns the script)
+    never interrupts one. The lock makes "is a run already going?" and "start one" a single step.
+    """
+    return {"lock": threading.Lock(), "runs": {}}
 
 
-def start_pipeline_run(max_chunks: int | None, fresh: bool) -> None:
-    """Only the worker thread changes status after this; the UI only sets the stop flag."""
-    runner = pipeline_runner()
-    if runner["status"] == "running":
-        return
-    runner.update(status="running", stage="queued", current=0, total=1, started=time.time(), finished=None,
-                  error=None, stats=None, stop=threading.Event(), chunks=max_chunks)
-    progress = make_progress(runner)
+def current_run() -> dict[str, Any] | None:
+    return run_registry()["runs"].get(WORK["key"])
+
+
+def input_pdfs(folder: Path) -> list[str]:
+    """Names of the PDFs a run would process now (the last upload), or [] if there are none."""
+    return [p.name for p in list_pdfs(folder)] if folder.is_dir() else []
+
+
+def start_run(files: list[UploadedPDF], cfg, api_key: str | None, max_chunks: int, fresh: bool) -> None:
+    """Save a new upload as this workspace's input PDFs, then run the pipeline in a background thread.
+
+    With no new files, the run reuses the PDFs of the previous upload (to continue a stopped run or to
+    re-run with other settings). Only the worker thread changes the run's status after this; the UI
+    only sets the stop flag.
+    """
+    registry = run_registry()
+    with registry["lock"]:
+        existing = registry["runs"].get(WORK["key"])
+        if existing and existing["status"] == "running":
+            return
+        if files:
+            replace_pdfs(files, WORK["pdfs"])
+        run: dict[str, Any] = {
+            "status": "running", "stage": "queued", "current": 0, "total": 1, "started": time.time(),
+            "finished": None, "stats": None, "error": None, "warnings": [], "stop": threading.Event(),
+            "files": input_pdfs(WORK["pdfs"]),
+        }
+        registry["runs"][WORK["key"]] = run
+    progress = make_progress(run)
     finished = work_started()
+    folders = dict(WORK)
 
     def work() -> None:
         try:
-            runner["stats"] = run_pipeline(CONFIG.paths.raw_dir, CONFIG.paths.output_dir, CONFIG,
-                                           max_chunks=max_chunks, progress_callback=progress, resume=not fresh)
-            runner["status"] = "done"
+            run["stats"] = run_pipeline(folders["pdfs"], folders["output"], cfg, max_chunks=max_chunks,
+                                        progress_callback=progress, resume=not fresh, cache_dir=folders["cache"],
+                                        api_key=api_key, warnings=run["warnings"])
+            run["status"] = "done"
         except PipelineCancelled:
-            runner["status"] = "stopped"
+            run["status"] = "stopped"
         except PipelineError as exc:
-            runner.update(status="error", error=str(exc))
+            run.update(status="error", error=str(exc))
         except Exception as exc:  # never show a raw traceback in the browser
             traceback.print_exc()
-            runner.update(status="error", error=redact(f"Unexpected error ({type(exc).__name__}): {exc}", None))
+            run.update(status="error", error=redact(f"Unexpected error ({type(exc).__name__}): {exc}", api_key))
         finally:
-            runner["finished"] = time.time()
+            run["finished"] = time.time()
             finished()
 
-    threading.Thread(target=work, name="pipeline-run", daemon=True).start()
+    threading.Thread(target=work, name=f"run-{WORK['key'][:8]}", daemon=True).start()
 
 
-run_active = pipeline_runner()["status"] == "running"
+run_active = (current_run() or {}).get("status") == "running"
 
 
-@st.fragment(run_every=1.5 if run_active else None)
-def pipeline_control() -> None:
-    """Sidebar Generate / Stop generating for the full pipeline, with live progress while it runs.
+def render_run_progress(run: dict[str, Any]) -> None:
+    stopping = run["stop"].is_set()
+    title = "Stopping after the current step" if stopping else stage_text(run)
+    with st.status(f"{title}…", state="running", expanded=True):
+        st.progress(overall_progress(run), text=f"{overall_progress(run):.0%} · {elapsed_text(run)} elapsed")
+        order = ["ingesting", "generating", "validating", "deduplicating", "exporting"]
+        reached = order.index(run["stage"]) if run["stage"] in order else -1
+        st.markdown("  \n".join(("✓ " if i < reached else "▸ " if i == reached else "○ ") + STAGE_LABELS[s]
+                                for i, s in enumerate(order)))
+        st.caption("Processing: " + ", ".join(run["files"]))
+    if st.button("■ Stop generating", disabled=stopping, key="run_stop"):
+        run["stop"].set()
+        st.rerun(scope="fragment")
+    st.caption("You can open the other tabs meanwhile. Stop keeps the finished work: press Generate dataset "
+               "again later to continue from where it stopped.")
 
-    "Start" and "Stop" are reserved for the desktop launcher (open / shut down the whole app).
-    """
-    runner = pipeline_runner()
-    status = runner["status"]
-    st.markdown("### Generate the dataset")
-    if status == "running":
-        stopping = runner["stop"].is_set()
-        label = "Stopping after the current step…" if stopping else stage_text(runner) + "…"
-        st.markdown(f":green[●] **Generating** · {elapsed_text(runner)}  \n{label}")
-        st.progress(overall_progress(runner))
-        if st.button("■ Stop generating", width="stretch", disabled=stopping, key="run_stop"):
-            runner["stop"].set()
-            st.rerun(scope="fragment")
-        st.caption("Finished work is saved. Press Generate dataset again later to continue from where it stopped.")
+
+def render_last_run(run: dict[str, Any] | None) -> None:
+    if not run:
         return
-    if run_active:  # it finished since the page last drew: refresh every tab with the new results
+    if run["status"] == "done" and run["stats"]:
+        st.success(f"Last run finished in {elapsed_text(run)}: {run['stats']['final_count']} pairs from "
+                   f"{', '.join(run['files'])}. Every tab now shows these results.")
+    elif run["status"] == "stopped":
+        st.info(f"The last run was stopped after {elapsed_text(run)}. Press Generate dataset to continue it "
+                "from where it stopped.")
+    elif run["status"] == "error":
+        st.error(f"The last run could not finish. {run['error']}")
+    for warning in run.get("warnings", []):
+        st.warning(warning)
+
+
+def render_upload_form() -> None:
+    web = CONFIG.web
+    stored = input_pdfs(WORK["pdfs"])
+    st.markdown('<div class="disclaimer"><b>Before you upload:</b> use public guideline documents only, never '
+                'patient data. The generated dataset is for education and research, not medical advice or '
+                'clinical decision-making.</div>', unsafe_allow_html=True)
+    left, right = st.columns([1.35, 1], gap="large")
+    with left:
+        uploads = st.file_uploader("PDF files", type=["pdf"], accept_multiple_files=True, key="pdf_upload")
+        st.caption(f"Up to {web.max_files_per_run} files, {web.max_upload_mb:g} MB each, with a text layer "
+                   "(scanned PDFs cannot be read).")
+    with right:
+        cap = web.public_max_chunks if PUBLIC else 5000
+        chunks = st.number_input(
+            "Chunks to process", min_value=1, max_value=cap, step=5 if PUBLIC else 10,
+            value=min(cap, web.public_max_chunks if PUBLIC else int(CONFIG.run.max_chunks or 100)), key="run_chunks",
+            help="Each PDF is cut into passages of about 600 characters (chunks); the run uses this many, spread "
+                 "evenly across your files (all of them if there are fewer). More chunks give more pairs but take "
+                 "longer: about 15 seconds per chunk on the free API tier (100 chunks ≈ 25 minutes)."
+                 + (f" This online demo allows up to {cap}." if PUBLIC else ""))
+        min_q = st.slider("Keep pairs scoring at least", 3, 6, CONFIG.validate.min_quality_score, key="run_min_q",
+                          help="Judge score out of 6 a pair needs to be kept. Higher means fewer but better pairs.")
+        compared = ("question and answer together" if CONFIG.deduplicate.embed == "question_answer"
+                    else "the questions")
+        sim = st.slider("Duplicate similarity threshold", 0.75, 0.95, float(CONFIG.deduplicate.similarity_threshold),
+                        0.01, key="run_sim",
+                        help=f"Pairs more similar than this (comparing {compared}) are treated as duplicates; "
+                             "the higher-scored pair is kept. Lower values remove more pairs.")
+        floors_cfg = CONFIG.validate.min_criterion_scores.to_dict()
+        st.caption("Always required as well: " + ", ".join(f"{c} ≥ {v}/2" for c, v in floors_cfg.items())
+                   + ". This stops a fluent answer with an unsupported claim from passing on its total alone.")
+        fresh = False
+        if PUBLIC:  # never spend the server's key on a visitor's run
+            st.text_input("Your Groq API key", type="password", key="user_api_key",
+                          help="Held in this browser session only: never written to disk or logged.")
+            st.caption("Required here. A free key takes a minute at "
+                       "[console.groq.com/keys](https://console.groq.com/keys).")
+        else:
+            fresh = st.checkbox("Start over (discard saved progress)", key="run_fresh",
+                                help="By default a run reuses finished work from an earlier run on the same PDFs "
+                                     "with the same settings, which is fast and free. Tick this to regenerate "
+                                     "everything.")
+            with st.expander("Use your own Groq API key (optional)"):
+                st.text_input("Groq API key", type="password", key="user_api_key",
+                              help="Held in this browser session only: never written to disk or logged.")
+                st.caption("If left empty, the key in .env is used" + ("." if has_api_key() else " (none is set)."))
+
+    files = [UploadedPDF(u.name, u.getvalue()) for u in (uploads or [])]
+    problems = validate_uploads(files, CONFIG) if files else []
+    for problem in problems:
+        st.error(problem)
+    user_key = (st.session_state.get("user_api_key") or "").strip() or None
+    key_available = bool(user_key) or (has_api_key() and not PUBLIC)
+    if files and not problems:
+        st.caption(f"Will process your upload: {', '.join(f.name for f in files)}."
+                   + (f" It replaces the PDFs of the previous run ({', '.join(stored)})." if stored else ""))
+    elif not files and stored:
+        st.caption(f"No new upload, so Generate dataset runs again on the PDFs of the previous run "
+                   f"({', '.join(stored)}): for example to continue a stopped run or to try other settings.")
+    elif not files:
+        st.caption("Choose one or more PDFs to begin.")
+    if not key_available:
+        st.warning("Enter your Groq API key above to generate a dataset." if PUBLIC else
+                   "No Groq API key is available. Add GROQ_API_KEY to .env or enter your own key above.")
+    can_run = (bool(files) and not problems) or (not files and bool(stored))
+    if st.button("▶ Generate dataset", type="primary", disabled=not (can_run and key_available),
+                 key="run_start") and can_run and key_available:
+        cfg = with_overrides(CONFIG, {"validate.min_quality_score": min_q, "deduplicate.similarity_threshold": sim})
+        start_run(files, cfg, user_key, int(chunks), fresh)
+        st.rerun(scope="app")
+    st.caption("Your PDFs and results stay in your own session; other visitors never see them. Until your run "
+               "finishes, the tabs show the example dataset." if PUBLIC else
+               f"Your PDFs are kept in `{CONFIG.paths.raw_dir}/` and the results replace `{CONFIG.paths.output_dir}/`. "
+               "Every tab shows them when the run finishes.")
+
+
+@st.fragment(run_every=1.0 if run_active else None)
+def upload_panel() -> None:
+    """Pipeline overview's "Upload PDFs": the one place a run starts, with live progress and Stop."""
+    run = current_run()
+    section("Upload PDFs", "Upload guideline PDFs with a text layer and press Generate dataset: the pipeline "
+                           "generates question-answer pairs, has a second model judge them, removes duplicates, "
+                           "and every tab then shows the result.")
+    if run and run["status"] == "running":
+        render_run_progress(run)
+        return
+    if run_active:  # the run finished since the page last drew: refresh every tab with its results
         st.cache_data.clear()
-        st.session_state.run_flash = {"done": "Generation finished: the tabs now show the new results.",
-                                      "stopped": "Generation stopped. Press Generate dataset to continue it later.",
-                                      "error": "Generation could not finish: see the sidebar."}.get(status)
+        st.session_state.run_flash = {"done": "Dataset ready: every tab now shows the new results.",
+                                      "stopped": "Run stopped. Press Generate dataset to continue it later.",
+                                      "error": "The run could not finish: see Upload PDFs."}.get(run["status"])
         st.rerun(scope="app")
-    if status == "done" and runner["stats"]:
-        st.success(f"Last run finished in {elapsed_text(runner)}: {runner['stats']['final_count']} pairs.")
-    elif status == "stopped":
-        st.info(f"Last run was stopped after {elapsed_text(runner)}. "
-                "Generate dataset continues from saved progress.")
-    elif status == "error":
-        st.error(runner["error"])
-    chunks = st.number_input("Chunks to process", min_value=1, max_value=5000, step=10,
-                             value=int(CONFIG.run.max_chunks or 100), key="run_chunks",
-                             help="More chunks give more pairs but take longer: roughly 15 seconds per chunk "
-                                  "on the free API tier (100 chunks ≈ 25 minutes).")
-    fresh = st.checkbox("Start over (discard saved progress)", key="run_fresh",
-                        help="By default a run reuses finished work from earlier runs with the same settings.")
-    if not has_api_key():
-        st.warning("Add GROQ_API_KEY to .env to run the pipeline.")
-    if st.button("▶ Generate dataset", type="primary", width="stretch", disabled=not has_api_key(),
-                 key="run_start"):
-        start_pipeline_run(int(chunks), fresh)
-        st.rerun(scope="app")
-    st.caption(f"Processes the PDFs in `{CONFIG.paths.raw_dir}/` and replaces the results in "
-               f"`{CONFIG.paths.output_dir}/` when it finishes.")
+    render_last_run(run)
+    render_upload_form()
 
 
 if st.session_state.get("run_flash"):
@@ -535,13 +693,10 @@ if st.session_state.get("run_flash"):
 with st.sidebar:
     if PUBLIC:
         st.markdown("### Public demo")
-        st.caption("This page shows a finished run of the pipeline, which you can explore and download. "
-                   "Re-running it is switched off here; to try your own PDFs, use the Generate from your PDFs "
-                   "tab with your own free Groq API key.")
-    else:
-        pipeline_control()
-    st.divider()
-    st.markdown("### Run details")
+        st.caption("Explore the example dataset, or make your own: upload PDFs in the Pipeline overview tab and "
+                   "use your own free Groq API key. Your run stays private to your session.")
+        st.divider()
+    st.markdown("### Example dataset" if SHOWING_EXAMPLE else "### Current dataset")
     if results:
         s, run = results["stats"], results["stats"].get("run", {})
         cfg_used = s.get("config", {})
@@ -562,17 +717,17 @@ with st.sidebar:
             for name in run.get("pdf_files", []):
                 st.markdown(f"- {name}")
     else:
-        st.caption("No pipeline run found in data/output yet.")
+        st.caption("No dataset yet: upload PDFs in the Pipeline overview tab.")
     if st.button("Reload results", width="stretch"):
         st.cache_data.clear()
         st.rerun()
     st.divider()
     st.caption("Pipeline code lives in `src/`; this app only presents it. "
-               + ("Public mode: read-only results; uploads use each visitor's own API key." if PUBLIC else
-                  "Server API key: " + ("configured" if has_api_key() else "not set")))
+               + ("Public mode: runs use each visitor's own API key and stay private to their session." if PUBLIC
+                  else "Server API key: " + ("configured" if has_api_key() else "not set")))
 
-tab_overview, tab_quality, tab_evidence, tab_judge, tab_generate, tab_output = st.tabs(
-    ["Pipeline overview", "Quality explorer", "Evidence", "Judge reliability", "Generate from your PDFs", "Output"]
+tab_overview, tab_quality, tab_evidence, tab_judge, tab_output = st.tabs(
+    ["Pipeline overview", "Quality explorer", "Evidence", "Judge reliability", "Output"]
 )
 
 
@@ -590,12 +745,39 @@ def render_stat_tiles(stats: dict[str, Any]) -> None:
     ])
 
 
+def render_download_bar(folder: Path) -> None:
+    """The main files, one click each; the Output tab has every file."""
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        download("Dataset (JSONL)", folder, "synthetic_dataset.jsonl", "synthetic_dataset.jsonl", key="ov_jsonl")
+    with c2:
+        download("Dataset (CSV)", folder, "synthetic_dataset.csv", "synthetic_dataset.csv", key="ov_csv")
+    with c3:
+        download("ChatML for fine-tuning", folder, "synthetic_dataset_chatml.jsonl",
+                 "synthetic_dataset_chatml.jsonl", key="ov_chatml")
+    with c4:
+        st.download_button("Everything (ZIP)", data=lambda f=folder: zip_outputs(f),
+                           file_name=f"synthetic_dataset_outputs_{zip_stamp(folder)}.zip", mime="application/zip",
+                           key="ov_zip", on_click="ignore", type="primary", width="stretch",
+                           icon=":material/folder_zip:")
+
+
 with tab_overview:
+    upload_panel()
+    st.divider()
     if not results:
         no_results_message()
     else:
         stats = results["stats"]
+        pdfs = stats.get("run", {}).get("pdf_files", [])
+        section("Example dataset" if SHOWING_EXAMPLE else "Current dataset",
+                f"{stats['final_count']:,} pairs from {', '.join(pdfs) or 'your PDFs'} · generated "
+                f"{stats.get('generated_at', '')[:16].replace('T', ' ')} UTC")
+        if SHOWING_EXAMPLE:
+            st.info("You are viewing the example dataset, made from three WHO guidelines. Upload your own PDFs "
+                    "above to make yours: it stays private to your session.")
         render_stat_tiles(stats)
+        render_download_bar(OUTPUT_DIR)
 
         left, right = st.columns([1.05, 1], gap="large")
         with left:
@@ -1026,6 +1208,11 @@ def judge_agreement(items: list[dict[str, Any]]) -> dict[str, Any]:
 
 def render_public_agreement(labels_file: Path) -> None:
     """Public mode: read-only, and results only once a person has finished a usable labelling."""
+    if not SHOWING_EXAMPLE:
+        st.info("The human check is part of running the project on your own computer: there, a person scores "
+                "a blind sample of this dataset's pairs and the agreement with the judge appears here. It is not "
+                "available for datasets made in this online demo, so treat the judge's scores as unverified.")
+        return
     items = agreement.load_labels(labels_file).get("items", []) if labels_file.is_file() else []
     if items and all(agreement.is_complete(i) for i in items):
         result = judge_agreement(items)
@@ -1100,205 +1287,8 @@ with tab_judge:
 
 
 # ---------------------------------------------------------------------------
-# Tab 5: generate from uploaded PDFs
+# Tab 5: output (download every result file)
 # ---------------------------------------------------------------------------
-@st.cache_resource
-def job_registry() -> dict[str, dict[str, Any]]:
-    """Process-wide job table. Jobs run in background threads, so a click elsewhere
-    in the app (which reruns the script) never interrupts a generation run."""
-    return {}
-
-
-def start_job(files: list[UploadedPDF], cfg, api_key: str | None) -> str:
-    job_id, job_dir = new_job_dir(cfg)
-    pdf_dir = save_uploads(files, job_dir)
-    job: dict[str, Any] = {
-        "id": job_id, "dir": job_dir, "status": "running", "stage": "queued", "current": 0, "total": 1,
-        "started": time.time(), "finished": None, "stats": None, "error": None, "warnings": [],
-        "files": [f.name for f in files], "stop": threading.Event(),
-    }
-    progress = make_progress(job)
-    finished = work_started()
-
-    def work() -> None:
-        try:
-            job["stats"] = run_pipeline(pdf_dir, job_dir / "output", cfg, max_chunks=cfg.web.max_chunks_per_upload,
-                                        progress_callback=progress, cache_dir=job_dir / "cache",
-                                        api_key=api_key, warnings=job["warnings"])
-            job["status"] = "done"
-        except PipelineCancelled:
-            job["status"] = "stopped"
-        except PipelineError as exc:
-            job.update(status="error", error=str(exc))
-        except Exception as exc:  # never show a raw traceback in the browser
-            traceback.print_exc()
-            job.update(status="error",
-                       error=redact(f"Unexpected error ({type(exc).__name__}): {exc}", api_key))
-        finally:
-            job["finished"] = time.time()
-            finished()
-
-    job_registry()[job_id] = job
-    threading.Thread(target=work, name=f"job-{job_id[:8]}", daemon=True).start()
-    return job_id
-
-
-def render_job_result(job: dict[str, Any]) -> None:
-    out = job["dir"] / "output"
-    stats = job["stats"]
-    elapsed = (job["finished"] or time.time()) - job["started"]
-    st.success(f"Done in {elapsed / 60:.1f} min: {stats['final_count']} pairs from {', '.join(job['files'])}.")
-    for warning in job.get("warnings", []):
-        st.warning(warning)
-    render_stat_tiles(stats)
-    rows = load_jsonl(out / "synthetic_dataset.jsonl") if (out / "synthetic_dataset.jsonl").is_file() else []
-    if rows:
-        section("Sample of generated pairs")
-        st.dataframe(pd.DataFrame(rows)[["question", "answer", "question_type", "quality_score", "source", "page"]].head(15),
-                     hide_index=True, width="stretch",
-                     column_config={"question": st.column_config.TextColumn("Question", width="large"),
-                                    "answer": st.column_config.TextColumn("Answer", width="large"),
-                                    "question_type": "Type", "quality_score": "Score", "source": "Source",
-                                    "page": "Page"})
-    d1, d2, d3 = st.columns(3)
-    d1.download_button("Download dataset (JSONL)", read_bytes(out / "synthetic_dataset.jsonl"),
-                       f"dataset_{job['id'][:8]}.jsonl", "application/jsonl", type="primary", width="stretch")
-    d2.download_button("ChatML for fine-tuning", read_bytes(out / "synthetic_dataset_chatml.jsonl"),
-                       f"dataset_{job['id'][:8]}_chatml.jsonl", "application/jsonl", width="stretch")
-    d3.download_button("All outputs + evidence (ZIP)", zip_outputs(out), f"outputs_{job['id'][:8]}.zip",
-                       "application/zip", width="stretch")
-
-
-with tab_generate:
-    web = CONFIG.web
-    section("Generate a dataset from your own PDFs",
-            "Upload guideline PDFs with a text layer. The same pipeline as the command line runs on them: "
-            "generation, LLM-judge validation and semantic deduplication.")
-    st.markdown('<div class="disclaimer"><b>Before you upload:</b> use public guideline documents only, never '
-                'patient data. The generated dataset is for education and research, not medical advice or '
-                'clinical decision-making.</div>', unsafe_allow_html=True)
-    st.info(f"Demo mode: processes up to {web.max_chunks_per_upload} text chunks, spread across your files "
-            f"(about 5–8 minutes), because the free API tier limits tokens per minute. "
-            f"Limits: {web.max_files_per_job} files, {web.max_upload_mb:g} MB each. Scanned PDFs without a "
-            "text layer cannot be read.")
-
-    job_id = st.session_state.get("job_id")
-    job = job_registry().get(job_id) if job_id else None
-    running = bool(job and job["status"] == "running")
-
-    left, right = st.columns([1.35, 1], gap="large")
-    with left:
-        uploads = st.file_uploader("PDF files", type=["pdf"], accept_multiple_files=True, disabled=running)
-    with right:
-        min_q = st.slider("Keep pairs scoring at least", 3, 6, CONFIG.validate.min_quality_score, disabled=running,
-                          help="Judge score out of 6. Higher means fewer but better pairs.")
-        sim = st.slider("Duplicate similarity threshold", 0.75, 0.95, float(CONFIG.deduplicate.similarity_threshold),
-                        0.01, disabled=running, help="Questions more similar than this are treated as duplicates.")
-        floors_cfg = CONFIG.validate.min_criterion_scores.to_dict()
-        st.caption("Always required as well: " + ", ".join(f"{c} ≥ {v}/2" for c, v in floors_cfg.items())
-                   + ". This stops a fluent answer with an unsupported claim from passing on its total alone.")
-        if PUBLIC:  # never spend the server's key on a visitor's job
-            st.text_input("Your Groq API key", type="password", key="user_api_key", disabled=running,
-                          help="Held in this browser session only: never written to disk or logged.")
-            st.caption("Required here. A free key takes a minute at "
-                       "[console.groq.com/keys](https://console.groq.com/keys).")
-        else:
-            with st.expander("Use your own Groq API key (optional)"):
-                st.text_input("Groq API key", type="password", key="user_api_key",
-                              help="Held in this browser session only: never written to disk or logged.")
-                st.caption("If left empty, the server's key is used"
-                           + ("." if has_api_key() else " (none is configured)."))
-
-    files = [UploadedPDF(u.name, u.getvalue()) for u in (uploads or [])]
-    problems = validate_uploads(files, CONFIG) if files else []
-    for problem in problems:
-        st.error(problem)
-    user_key = (st.session_state.get("user_api_key") or "").strip() or None
-    key_available = bool(user_key) or (has_api_key() and not PUBLIC)
-    if not key_available:
-        st.warning("Enter your Groq API key above to generate a dataset." if PUBLIC else
-                   "No Groq API key is available. Add GROQ_API_KEY to .env or enter your own key above.")
-
-    go_clicked = st.button("Generate dataset", type="primary", disabled=running or not files or bool(problems)
-                           or not key_available)
-    if go_clicked and key_available:
-        cfg = with_overrides(CONFIG, {"validate.min_quality_score": min_q, "deduplicate.similarity_threshold": sim})
-        st.session_state.job_id = start_job(files, cfg, user_key)
-        st.rerun()
-
-    @st.fragment(run_every=1.0 if running else None)
-    def job_panel() -> None:
-        current = job_registry().get(st.session_state.get("job_id") or "")
-        if not current:
-            return
-        if current["status"] == "running":
-            stopping = current["stop"].is_set()
-            title = "Stopping after the current step" if stopping else stage_text(current)
-            with st.status(f"{title}…", state="running", expanded=True):
-                st.progress(overall_progress(current), text=f"{overall_progress(current):.0%} · "
-                                                             f"{elapsed_text(current)} elapsed")
-                order = ["ingesting", "generating", "validating", "deduplicating", "exporting"]
-                reached = order.index(current["stage"]) if current["stage"] in order else -1
-                st.markdown("  \n".join(
-                    ("✓ " if i < reached else "▸ " if i == reached else "○ ") + STAGE_LABELS[s]
-                    for i, s in enumerate(order)))
-            if st.button("■ Stop this job", disabled=stopping, key=f"stop_{current['id']}"):
-                current["stop"].set()
-                st.rerun(scope="fragment")
-        elif running:
-            st.rerun()  # the job just finished: redraw the whole page once with results
-
-    job_panel()
-    if job and job["status"] == "done":
-        render_job_result(job)
-    elif job and job["status"] == "stopped":
-        st.info(f"Job stopped after {elapsed_text(job)}. Upload the PDFs again and press Generate to start a "
-                "new job.")
-    elif job and job["status"] == "error":
-        st.error(f"The job could not finish. {job['error']}")
-
-
-# ---------------------------------------------------------------------------
-# Tab 6: output (download every result file)
-# ---------------------------------------------------------------------------
-def file_available(folder: Path, name: str) -> bool:
-    return (folder / ("synthetic_dataset.jsonl" if name == "synthetic_dataset.csv" else name)).is_file()
-
-
-def file_meta(folder: Path, name: str) -> str:
-    source = folder / ("synthetic_dataset.jsonl" if name == "synthetic_dataset.csv" else name)
-    updated = time.strftime("%d %b %Y, %H:%M", time.localtime(source.stat().st_mtime))
-    size = "" if name == "synthetic_dataset.csv" else human_size(source.stat().st_size)
-    return " · ".join(part for part in (row_count(folder, name), size, f"updated {updated}") if part)
-
-
-def download(label: str, folder: Path, name: str, file_name: str, key: str) -> None:
-    """A download button whose bytes are read (or built) only when it is clicked."""
-    st.download_button(label, data=lambda f=folder, n=name: output_bytes(f, n), file_name=file_name,
-                       mime=MIME.get(Path(name).suffix, "application/octet-stream"), key=key,
-                       on_click="ignore", width="stretch", icon=":material/download:")
-
-
-SHOW_ALL_JOBS = CONFIG.web.show_all_upload_jobs and not PUBLIC  # visitors never see each other's jobs
-
-
-def upload_jobs() -> list[tuple[str, Path, dict[str, Any]]]:
-    """Finished upload jobs on disk, newest first: (job id, output folder, stats)."""
-    root = resolve_path(CONFIG.paths.uploads_dir)
-    session_job = st.session_state.get("job_id")
-    jobs = []
-    for stats_path in root.glob("*/output/pipeline_stats.json") if root.is_dir() else []:
-        job_id = stats_path.parent.parent.name
-        if not SHOW_ALL_JOBS and job_id != session_job:
-            continue
-        try:
-            with open(stats_path, encoding="utf-8") as fh:
-                jobs.append((job_id, stats_path.parent, json.load(fh)))
-        except (OSError, json.JSONDecodeError):
-            continue
-    return sorted(jobs, key=lambda j: j[1].stat().st_mtime, reverse=True)
-
-
 with tab_output:
     section("Download your results",
             "Every file the pipeline produced, ready to save to your computer. Each download is the file "
@@ -1309,16 +1299,17 @@ with tab_output:
     else:
         s = results["stats"] if results else {}
         run = s.get("run", {})
-        stamp = time.strftime("%Y%m%d", time.localtime((OUTPUT_DIR / "pipeline_stats.json").stat().st_mtime))
-        st.markdown(f"**Main dataset:** {s.get('final_count', 0):,} pairs from "
-                    f"{len(run.get('pdf_files', []))} PDFs · average quality "
-                    f"{fmt_score(s.get('average_quality_score'))} / 6 · saved in `data/output/`")
+        where = ("" if SHOWING_EXAMPLE else " · kept in your session" if PUBLIC
+                 else f" · saved in `{CONFIG.paths.output_dir}/`")
+        st.markdown(f"**{'Example' if SHOWING_EXAMPLE else 'Current'} dataset:** {s.get('final_count', 0):,} pairs "
+                    f"from {len(run.get('pdf_files', []))} PDFs · average quality "
+                    f"{fmt_score(s.get('average_quality_score'))} / 6{where}")
         left, _ = st.columns([1, 2])
         with left:
             st.download_button("Download everything (ZIP)", data=lambda: zip_outputs(OUTPUT_DIR),
-                               file_name=f"synthetic_dataset_outputs_{stamp}.zip", mime="application/zip",
-                               key="dl_all", on_click="ignore", type="primary", width="stretch",
-                               icon=":material/folder_zip:")
+                               file_name=f"synthetic_dataset_outputs_{zip_stamp(OUTPUT_DIR)}.zip",
+                               mime="application/zip", key="dl_all", on_click="ignore", type="primary",
+                               width="stretch", icon=":material/folder_zip:")
 
         section("Individual files")
         for name, title, desc, how in OUTPUT_CATALOG:
@@ -1329,7 +1320,7 @@ with tab_output:
                     st.markdown(f"**{title}**  \n{desc}")
                     st.caption(f"`{name}`")
                 with meta:
-                    st.caption(file_meta(OUTPUT_DIR, name) if available else f"Not created yet: run {how}.")
+                    st.caption(file_meta(OUTPUT_DIR, name) if available else f"Not created yet: made by {how}.")
                 with button:
                     if available:
                         download("Download", OUTPUT_DIR, name, name, key=f"dl_{name}")
@@ -1345,33 +1336,3 @@ with tab_output:
                 rows = [{"user": r["messages"][-2]["content"], "assistant": r["messages"][-1]["content"]} for r in rows]
             frame = pd.DataFrame(rows).drop(columns=["chunk_text"], errors="ignore")
             st.dataframe(frame, hide_index=True, width="stretch", height=380)
-
-    jobs = upload_jobs()
-    section("Your upload jobs",
-            "Datasets generated from PDFs you uploaded in the Generate tab. Each job is kept in its own folder "
-            "under data/uploads/." + ("" if SHOW_ALL_JOBS else " Showing this session's job only."))
-    if not jobs:
-        st.caption("No upload jobs yet. Generate one in the Generate from your PDFs tab.")
-    for job_id, folder, job_stats in jobs:
-        job_run = job_stats.get("run", {})
-        when = time.strftime("%d %b %Y, %H:%M", time.localtime(folder.stat().st_mtime))
-        this_session = " · this session" if job_id == st.session_state.get("job_id") else ""
-        with st.container(border=True):
-            st.markdown(f"**{', '.join(job_run.get('pdf_files', [])) or 'Upload job'}**{this_session}")
-            st.caption(f"{when} · {job_stats.get('final_count', 0)} pairs · average quality "
-                       f"{fmt_score(job_stats.get('average_quality_score'))} / 6 · job {job_id[:8]}")
-            b1, b2, b3, b4 = st.columns(4)
-            with b1:
-                download("Dataset (JSONL)", folder, "synthetic_dataset.jsonl",
-                         f"job_{job_id[:8]}_synthetic_dataset.jsonl", key=f"job_{job_id}_jsonl")
-            with b2:
-                download("Dataset (CSV)", folder, "synthetic_dataset.csv",
-                         f"job_{job_id[:8]}_synthetic_dataset.csv", key=f"job_{job_id}_csv")
-            with b3:
-                download("ChatML", folder, "synthetic_dataset_chatml.jsonl",
-                         f"job_{job_id[:8]}_chatml.jsonl", key=f"job_{job_id}_chatml")
-            with b4:
-                st.download_button("Everything (ZIP)", data=lambda f=folder: zip_outputs(f),
-                                   file_name=f"job_{job_id[:8]}_outputs.zip", mime="application/zip",
-                                   key=f"job_{job_id}_zip", on_click="ignore", width="stretch",
-                                   icon=":material/folder_zip:")

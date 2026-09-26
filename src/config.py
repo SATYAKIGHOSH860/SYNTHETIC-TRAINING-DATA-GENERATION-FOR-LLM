@@ -126,8 +126,8 @@ _SCHEMA: dict[str, dict[str, Any]] = {
     "export": {"chatml_include_context": bool},
     "agreement": {"sample_size": int, "seed": int},
     "run": {"max_chunks": (int, type(None)), "checkpoint_every": int, "seed": int},
-    "web": {"max_chunks_per_upload": int, "max_upload_mb": _NUM, "max_files_per_job": int,
-            "show_all_upload_jobs": bool, "public_mode": (bool, str)},
+    "web": {"max_upload_mb": _NUM, "max_files_per_run": int, "public_max_chunks": int,
+            "public_mode": (bool, str)},
 }
 
 
@@ -175,7 +175,8 @@ def _validate(data: dict[str, Any]) -> None:
     check(data["model"]["max_retries"] >= 1, "model.max_retries must be >= 1")
     check(data["model"]["tokens_per_minute"] > 0, "model.tokens_per_minute must be > 0")
     check(data["model"]["requests_per_minute"] > 0, "model.requests_per_minute must be > 0")
-    check(data["web"]["max_chunks_per_upload"] > 0, "web.max_chunks_per_upload must be > 0")
+    check(data["web"]["public_max_chunks"] > 0, "web.public_max_chunks must be > 0")
+    check(data["web"]["max_files_per_run"] >= 1, "web.max_files_per_run must be >= 1")
     check(data["web"]["public_mode"] in (True, False, "auto"), "web.public_mode must be auto, true or false")
     if problems:
         raise ConfigError("Invalid config.yaml values:\n  - " + "\n  - ".join(problems))
@@ -250,6 +251,20 @@ def resolve_path(path: str | Path) -> Path:
     """Resolve a config path against the project root, so runs work from any cwd."""
     p = Path(path)
     return p if p.is_absolute() else (PROJECT_ROOT / p)
+
+
+def project_relative(path: str | Path) -> str:
+    """A path as written in files and messages: relative to the project root when inside it.
+
+    Why: results are committed and shared, so they must not record this
+    machine's folder layout (user name, drive); "data/raw" means the same
+    everywhere. Paths outside the project are left unchanged.
+    """
+    p = resolve_path(path)
+    try:
+        return p.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(p)
 
 
 LOCAL_ADDRESSES = ("localhost", "127.0.0.1", "::1")

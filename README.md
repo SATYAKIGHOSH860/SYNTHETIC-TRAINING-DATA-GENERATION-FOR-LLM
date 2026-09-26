@@ -10,6 +10,8 @@ PDFs → clean chunks → LLM generates Q&A → LLM judge scores → semantic de
 
 Organisations that want a domain assistant usually have documents but no labelled training data, and writing thousands of Q&A pairs by hand does not scale. This project automates both the generation and the quality control, and reports how well the quality control actually worked.
 
+**New to the project?** [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md) explains every step, every dashboard section and control, and every number, in plain language.
+
 ---
 
 ## Results (100-chunk run on three WHO guidelines)
@@ -33,6 +35,9 @@ Final dataset by source: carbohydrate guideline 86, child overweight/obesity gui
 **Compared with the spec's expected results** (about 300 raw, 70% pass, about 180 final, average 4.5–5.0): this run produced fewer raw pairs (242), because 22 of the 100 chunks held no substantive content even after boilerplate filtering. The pass rate (96%) and average score (5.99) are much higher. Part of that is real: a stronger generator, a stricter prompt, and filtering out reference lists and committee rosters before generation. Part may be judge leniency. The score distribution sits at a ceiling (221 of 232 pairs at 6/6), and a spot check found a pair scored 6/6 that turned the passage's "priority *may vary*" into "authorities *should adjust*". The human-agreement study (experiment 3) exists to measure exactly this. Until it is done, read the quality numbers as the judge's opinion, not as established fact.
 
 ### Source documents (public WHO guidelines, NCBI Bookshelf)
+
+The results above come from these three PDFs. They are not bundled with the project, which takes its input only from uploads: download them from the NCBI Bookshelf and upload them to reproduce this run.
+
 | File | Guideline | Pages |
 |---|---|---|
 | `Bookshelf_NBK304307.pdf` | Guideline on HIV disclosure counselling for children up to 12 years of age (2011) | 47 |
@@ -52,12 +57,12 @@ flowchart LR
     E --> F[export.py<br/>JSONL · ChatML · stats]
     D -- rejected_pairs.jsonl --> G[(evidence)]
     E -- duplicate_pairs.jsonl --> G
-    F --> H[dashboard/app.py<br/>6 tabs incl. upload + downloads]
+    F --> H[dashboard/app.py<br/>Upload PDFs starts every run · 5 tabs]
     F --> I[agreement.py<br/>human labels → Cohen's κ]
     I --> H
 ```
 
-- **`src/pipeline.py` is the only pipeline implementation.** The CLI (`main.py`) and the upload tab call the same `run_pipeline()` function. `src/` never imports Streamlit, and the dashboard never reimplements pipeline logic.
+- **`src/pipeline.py` is the only pipeline implementation.** The dashboard's Upload PDFs section and the CLI (`main.py`) call the same `run_pipeline()` function. `src/` never imports Streamlit, and the dashboard never reimplements pipeline logic.
 - **`src/llm.py`** holds everything that generation and judging share: the Groq client, a rate limiter that paces requests under the free-tier token limits, retries with 1 s / 2 s / 4 s backoff, JSON extraction that tolerates code fences and surrounding prose, and immediate failure (with a clear message) on a bad key, an unknown model id or an exhausted daily quota.
 - **Checkpoints** make every run resumable (`--resume`). A fingerprint of the chunk set, prompt version and settings ensures a checkpoint is only reused by an identical run.
 
@@ -77,7 +82,7 @@ src/pipeline.py          run_pipeline(): the shared engine
 src/uploads.py           upload validation and per-job folders
 dashboard/app.py         Streamlit app
 launcher.py              Start / Stop desktop control panel (+ desktop shortcut)
-tests/test_pipeline.py   42 offline tests
+tests/test_pipeline.py   44 offline tests
 requirements.txt         pinned runtime packages (Windows + Linux, CPU-only torch)
 requirements-dev.txt     the same plus pytest
 ```
@@ -112,16 +117,21 @@ copy .env.example .env                    # then put your key from https://conso
 
 ![Start / Stop control panel](docs/screenshots/0_launcher.png)
 
-Inside the dashboard, the sidebar's **Generate the dataset** panel builds the dataset from `data/raw/`. **Stop generating** halts safely after the current step, and the next **Generate dataset** continues from saved progress.
+**One pipeline, started by an upload.** In the dashboard's **Pipeline overview** tab, the **Upload PDFs** section is where every run starts:
+1. Choose the PDFs and press **Generate dataset**. The uploaded PDFs become the run's input in `data/raw/`, replacing the previous run's PDFs.
+2. Watch the live progress. **Stop generating** halts safely after the current step, and pressing **Generate dataset** again, with no new upload, continues from saved progress.
+3. When the run finishes, its results replace `data/output/` and every tab shows them. The main files download straight from the overview; every file is in the **Output** tab.
 
-From a terminal instead, put PDFs in `data/raw/`, then:
+The repository ships no input PDFs: `data/output/` holds an example run on three WHO guidelines until your first run replaces it.
+
+From a terminal, `main.py` runs the same pipeline on the PDFs in `data/raw/` (the last upload, or PDFs you copy there):
 
 ```powershell
 python main.py --max-chunks 5            # smoke test (~1 min)
 python main.py                           # 100 chunks (~25 min on the free tier)
 python main.py --resume                  # continue an interrupted run
 streamlit run dashboard/app.py --server.address localhost   # full dashboard on this computer
-pytest -q                                # 42 tests, offline, no API key needed
+pytest -q                                # 44 tests, offline, no API key needed
 python -m src.experiments                # experiment tables from the last run
 ```
 
@@ -139,20 +149,20 @@ Other CLI options: `--min-quality-score`, `--similarity-threshold`, `--set secti
 
 | Visitors can | Visitors cannot |
 |---|---|
-| explore every tab of the finished run and download every file | re-run the pipeline or overwrite the committed results |
+| explore every tab of the example run and download every file | replace or change the example dataset that everyone sees |
 | read the judge-agreement results once the human labelling is complete | see or change the human labels |
-| generate a dataset from their own PDFs **with their own Groq key**, held in their browser session only | use the server's API key (none is needed on the server) |
-| download their own upload job | see anyone else's upload jobs |
+| upload their own PDFs and run the same pipeline **with their own Groq key**, held in their browser session only; every tab then shows their dataset (at most 30 chunks per run) | use the server's API key (none is needed on the server) |
+| download their own results | see anyone else's uploads or results (each visitor's run lives in their own folder under `data/uploads/`) |
 
 To deploy:
 
-1. Push the project to a GitHub repository. `.gitignore` keeps `.env`, `venv/`, checkpoints and upload jobs out. `data/output/` **is** committed, because it is the run that visitors see.
+1. Push the project to a GitHub repository. `.gitignore` keeps `.env`, `venv/`, checkpoints, uploaded PDFs and visitors' folders out. `data/output/` **is** committed, because it is the example run that visitors see.
 2. On [share.streamlit.io](https://share.streamlit.io), create an app from that repository with main file path `dashboard/app.py`.
 3. Under **Advanced settings**, choose **Python 3.12**: the pinned CPU-only PyTorch builds are for 3.12. Leave **Secrets** empty, because public mode never uses a server key.
 4. Deploy. The first build downloads PyTorch and takes several minutes. The first page load then downloads the 90 MB embedding model.
 
 Notes:
-- Files created on the server (visitors' upload jobs) are temporary and disappear when the app restarts.
+- Files created on the server (visitors' uploads and results) are temporary and disappear when the app restarts.
 - To publish a new run: run it locally, commit `data/output/`, and push.
 - The app needed about 610 MB of memory once PyTorch and the embedding model were loaded (measured on Windows).
 
@@ -160,20 +170,22 @@ Notes:
 
 ## Dashboard
 
-`streamlit run dashboard/app.py`. The disclaimer is shown on every tab. The spec's five tabs are followed by a sixth, **Output**, for downloads.
+`streamlit run dashboard/app.py --server.address localhost` (or the desktop launcher). The disclaimer is shown on every tab. There is one pipeline and one dataset: the **Upload PDFs** section starts every run, and all five tabs show that run's results.
 
 | | |
 |---|---|
-| **1. Pipeline overview**: metric cards, funnel, pairs per source, question types, opening-word diversity | ![overview](docs/screenshots/1_overview.png) |
+| **1. Pipeline overview**: the **Upload PDFs** section (files, chunk count, keep and dedup thresholds, Generate / Stop), then the current dataset: metric cards, one-click downloads, funnel, pairs per source, question types, opening-word diversity | ![overview](docs/screenshots/1_overview.png) |
+| Upload PDFs: files chosen, ready to generate | ![upload ready](docs/screenshots/1a_upload_ready.png) |
+| Upload PDFs: running, with the stage checklist and Stop | ![running](docs/screenshots/1b_upload_running.png) |
+| Upload PDFs: finished; every tab now shows the new dataset | ![finished](docs/screenshots/1c_upload_done.png) |
 | **2. Quality explorer**: score histogram, minimum-score slider (shown at 5), search and filters, cards with sub-scores and passages | ![quality explorer](docs/screenshots/2_quality_explorer.png) |
 | **3. Evidence**: rejections with the judge's reasons, kept examples, duplicates side by side, unanswerable examples, downloads | ![evidence](docs/screenshots/3_evidence.png) |
 | **4. Judge reliability**: a blind labelling form, then per-criterion Cohen's κ, the keep/reject confusion matrix and a plain-language verdict | ![judge reliability](docs/screenshots/4_judge_reliability.png) |
-| **5. Generate from your PDFs**: upload (3 files, 25 MB each), settings, live progress, results and downloads | ![generate](docs/screenshots/5a_upload_ready.png) |
-| Upload flow: running | ![progress](docs/screenshots/5b_upload_progress.png) |
-| Upload flow: finished (1-page excerpt of the carbohydrate guideline: 7 chunks → 22 pairs in 48 s) | ![result](docs/screenshots/5c_upload_result.png) |
-| **6. Output**: download everything as one ZIP, or any single file (JSONL, a CSV that opens in Excel, ChatML, audit and evidence files, statistics, labels, experiment tables), with a preview; plus every upload job's results | ![output](docs/screenshots/6_output.png) |
+| **5. Output**: download everything as one ZIP, or any single file (JSONL, a CSV that opens in Excel, ChatML, audit and evidence files, statistics, labels, experiment tables), with a preview | ![output](docs/screenshots/6_output.png) |
 
-Upload jobs run in a background thread with their own `data/uploads/<uuid>/` folder, so clicking elsewhere in the app never interrupts a job and concurrent users never collide. Demo mode caps a job at 30 chunks (about 5–8 minutes under the free-tier token limit), and the app says so before you upload. Each file is checked for size, count and a real `%PDF` signature. Scanned PDFs without a text layer are reported by name instead of producing empty output. A user can supply their own Groq key for a job; it is held in the browser session only, never written to disk or logged.
+A run happens in a background thread, so clicking elsewhere in the app never interrupts it. Each file is checked for size, count (3 files, 25 MB each by default) and a real `%PDF` signature. Scanned PDFs without a text layer are reported by name instead of producing empty output. You can enter your own Groq key for a run; it is held in the browser session only, never written to disk or logged.
+
+When a run produces a **different** dataset, `human_labels.json`, `judge_agreement.json` and `experiments.*`, which describe the previous dataset, move to `data/output/previous/<time>/`. The human labels are gold data, so nothing is deleted. Re-running the same PDFs with the same settings moves nothing.
 
 ---
 
@@ -309,11 +321,15 @@ The dataset leans factual (77% of answerable pairs), which reflects the source m
 - **Free-tier limits.** A 100-chunk run uses about 95k generator and 80k judge tokens, close to half of each model's 200k-token daily quota. Running the whole corpus (1,092 chunks) needs several days or a paid tier. Runs resume from checkpoints.
 - **The dataset mixes two prompt versions** (see above).
 - **No OCR.** Scanned PDFs are detected and skipped with a warning.
-- **Locally, the upload tab uses the server's API key** unless you enter your own. Public mode (see [Deploy](#deploy-streamlit-community-cloud)) never uses the server key: visitors must bring their own.
+- **Locally, a run uses the key in `.env`** unless you enter your own. Public mode (see [Deploy](#deploy-streamlit-community-cloud)) never uses the server key: visitors must bring their own.
 - English only.
 
 ## Future work (optional extension, not built)
 Fine-tune a small model (for example Llama 3.2 3B with QLoRA in Colab) on three variants of the data: raw, validated, and validated plus deduplicated. Compare them with the base model on held-out questions. If the smallest, cleanest set performs best, the quality pipeline is justified empirically rather than asserted.
 
 ## Safety
-Educational and research use only; not medical advice; not for clinical decision-making. Only public guideline documents are used, never patient data. Generated pairs can contain errors inherited from the generating model. That is precisely why the validation layer exists, and validation reduces those errors but does not eliminate them. The same disclaimer appears in the dashboard (every tab, including the upload tab before anything is uploaded) and in any dataset card pushed to the Hugging Face Hub. The source documents are © WHO, licensed CC BY-NC-SA 3.0 IGO.
+Educational and research use only; not medical advice; not for clinical decision-making. Only public guideline documents are used, never patient data. Generated pairs can contain errors inherited from the generating model. That is precisely why the validation layer exists, and validation reduces those errors but does not eliminate them. The same disclaimer appears in the dashboard (every tab, plus a "no patient data" warning in the Upload PDFs section before anything is uploaded) and in any dataset card pushed to the Hugging Face Hub. The source documents are © WHO, licensed CC BY-NC-SA 3.0 IGO.
+
+## License
+- **Code:** MIT, see [LICENSE](LICENSE).
+- **Example dataset** (`data/output/`): derived from WHO guidelines (© WHO, CC BY-NC-SA 3.0 IGO), so it is shared under the same terms: attribution, non-commercial use, same licence. Datasets you generate from your own documents follow the licence of those documents.

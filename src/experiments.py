@@ -79,7 +79,8 @@ def run_experiments(output_dir: str | Path | None = None, cfg: Config = CONFIG) 
     out = resolve_path(output_dir or cfg.paths.output_dir)
     path = out / "judged_pairs.jsonl"
     if not path.is_file():
-        raise SystemExit(f"No {path}. Run `python main.py` first.")
+        raise SystemExit(f"No {path}. Generate a dataset first (dashboard: Pipeline overview, Upload PDFs; "
+                         "or `python main.py`).")
     judged = load_jsonl(path)
     index = {p["id"]: i for i, p in enumerate(judged)}
     emb_q = np.asarray(embed_questions([p["question"] for p in judged], cfg), dtype=np.float32)

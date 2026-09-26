@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-24T13:59:29+00:00",
+  "generated_at": "2026-09-26T07:35:12+00:00",
   "raw_count": 242,
   "raw_answerable": 232,
   "raw_unanswerable": 10,
@@ -217,14 +217,14 @@
       "seed": 42
     },
     "web": {
-      "max_chunks_per_upload": 30,
       "max_upload_mb": 25,
-      "max_files_per_job": 3,
-      "show_all_upload_jobs": true
+      "max_files_per_run": 3,
+      "public_max_chunks": 30,
+      "public_mode": "auto"
     }
   },
   "run": {
-    "pdf_dir": "C:\\Users\\KIIT\\Desktop\\CVS\\CV PROJECTS\\SYNTHETIC TRAINING DATA GENERATION FOR LLM\\data\\raw",
+    "pdf_dir": "data/raw",
     "pdf_files": [
       "Bookshelf_NBK304307.pdf",
       "Bookshelf_NBK487902.pdf",
@@ -248,12 +248,12 @@
     "tokens_generation": 94679,
     "tokens_validation": 78372,
     "stage_seconds": {
-      "ingest": 63.3,
-      "deduplicate": 3.1,
+      "ingest": 16.7,
+      "deduplicate": 2.9,
       "generate": 0.0,
       "validate": 0.0
     },
-    "wall_seconds": 66.7,
+    "wall_seconds": 19.9,
     "resumed": true,
     "refilled": false,
     "warnings": []

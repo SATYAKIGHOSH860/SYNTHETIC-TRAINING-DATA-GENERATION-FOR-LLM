@@ -14,9 +14,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from src.config import CONFIG, Config, ConfigError, require_api_key, resolve_path
+from src.config import CONFIG, Config, ConfigError, project_relative, require_api_key, resolve_path
 from src.deduplicate import deduplicate
-from src.export import build_stats, print_report, write_outputs
+from src.export import archive_stale_files, build_stats, print_report, write_outputs
 from src.generate import generate_from_chunks
 from src.ingest import NoReadablePDFError, chunk_documents, list_pdfs, load_pdfs, select_chunks
 from src.llm import FatalLLMError
@@ -113,8 +113,8 @@ def run_pipeline(
         raise PipelineError(str(exc)) from None
     if not raw_pairs:
         raise PipelineError(
-            "The model produced no usable question-answer pairs. Check the log above: every chunk "
-            "either failed or was judged to contain no substantive content."
+            "The model produced no usable question-answer pairs: every chunk either failed or was judged "
+            "to contain no substantive content (for example only references or a contents list)."
         )
 
     # --- 3. Validate -----------------------------------------------------------
@@ -138,13 +138,19 @@ def run_pipeline(
     # --- 5. Export -------------------------------------------------------------
     _header("5/5  EXPORT: dataset, evidence files, statistics")
     notify(0, 1, "exporting")
+    archived = archive_stale_files(output_dir, kept + rejected)
+    if archived:
+        folder, names = archived
+        warnings.append(f"This is a new dataset, so {', '.join(names)} (made for the previous dataset) "
+                        f"moved to {project_relative(folder)}. Nothing was deleted.")
+        print(f"  WARNING: {warnings[-1]}")
     timings["generate"] = gen_report.get("seconds", 0.0)
     timings["validate"] = val_report.get("seconds", 0.0)
     gen_usage, val_usage = gen_report.get("usage", {}), val_report.get("usage", {})
     wall = round(time.time() - started, 1)
     run_info = {
         "run": {
-            "pdf_dir": str(pdf_dir),
+            "pdf_dir": project_relative(pdf_dir),
             "pdf_files": [p.name for p in pdf_files],
             "pages_loaded": len(docs),
             "chunks_total": len(chunks),
