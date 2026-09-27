@@ -55,6 +55,32 @@ def load_heavy_libraries() -> None:
     get_embedding_model()
 
 
+def library_report() -> str:
+    """One line on the running Python and PyTorch install, shown when loading the libraries fails.
+
+    Why: "Failed to load PyTorch C extensions" means Python found the torch package but not its
+    compiled core file (torch/_C.<python tag>.so or .pyd), usually because the file is missing or
+    was built for another Python version. This names the Python version, the core files present and
+    the file endings this Python accepts, which is enough to tell those causes apart.
+    """
+    import importlib.machinery
+    import importlib.metadata
+    import importlib.util
+    import platform
+
+    parts = [f"Python {platform.python_version()} on {platform.system()} {platform.machine()}"]
+    try:
+        parts.append(f"torch {importlib.metadata.version('torch')}")
+        spec = importlib.util.find_spec("torch")
+        folder = Path(next(iter(spec.submodule_search_locations)))
+        core = sorted(p.name for p in folder.iterdir() if p.is_file() and p.name.startswith("_C."))
+        parts.append(f"core files in {project_relative(folder)}: {', '.join(core) or 'none'}")
+    except Exception as exc:  # the report must never hide the original error
+        parts.append(f"torch not inspectable ({type(exc).__name__})")
+    parts.append("this Python loads: " + ", ".join(importlib.machinery.EXTENSION_SUFFIXES))
+    return "; ".join(parts)
+
+
 def _header(title: str) -> None:
     print(f"\n{'-' * 60}\n {title}\n{'-' * 60}", flush=True)
 

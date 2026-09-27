@@ -50,7 +50,9 @@ from src import agreement  # noqa: E402
 from src.export import DISCLAIMER, load_jsonl  # noqa: E402
 from src.ingest import list_pdfs  # noqa: E402
 from src.llm import redact  # noqa: E402
-from src.pipeline import PipelineCancelled, PipelineError, load_heavy_libraries, run_pipeline  # noqa: E402
+from src.pipeline import (  # noqa: E402
+    PipelineCancelled, PipelineError, library_report, load_heavy_libraries, run_pipeline,
+)
 from src.uploads import UploadedPDF, replace_pdfs, validate_uploads  # noqa: E402
 
 # Public mode (config web.public_mode): visitors see the example dataset, runs need the visitor's own
@@ -405,7 +407,8 @@ def warm_up() -> dict[str, Any]:
         try:
             load_heavy_libraries()
         except Exception as exc:
-            state["error"] = f"{type(exc).__name__}: {exc}"
+            first_line = (str(exc).strip().splitlines() or [""])[0]
+            state["error"] = f"{type(exc).__name__}: {first_line} [Diagnosis: {library_report()}]"
             traceback.print_exc()
 
     state["thread"] = threading.Thread(target=load, name="warm-up", daemon=True)

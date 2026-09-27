@@ -104,7 +104,7 @@ requirements-dev.txt     the same plus pytest
 
 ## Setup
 
-Requirements: Windows (tested) or Linux x86_64 (the deployment target), Python 3.12, **no GPU**. The language model runs remotely on Groq; the only local model is the 90 MB embedding model, which runs on the CPU.
+Requirements: Windows (tested) or Linux (the deployment target), Python 3.12 (tested; 3.10–3.14 also install), **no GPU**. The language model runs remotely on Groq; the only local model is the 90 MB embedding model, which runs on the CPU.
 
 ```powershell
 py -3.12 -m venv venv
@@ -158,7 +158,8 @@ To deploy:
 
 1. Push the project to a GitHub repository. `.gitignore` keeps `.env`, `venv/`, checkpoints, uploaded PDFs and visitors' folders out. `data/output/` **is** committed, because it is the example run that visitors see.
 2. On [share.streamlit.io](https://share.streamlit.io), create an app from that repository with main file path `dashboard/app.py`.
-3. Under **Advanced settings**, choose **Python 3.12**: the pinned CPU-only PyTorch builds are for 3.12. Leave **Secrets** empty, because public mode never uses a server key.
+3. Under **Advanced settings**, choose **Python 3.12** (the tested version; the install picks the matching CPU-only PyTorch build for other versions too). Leave **Secrets** empty, because public mode never uses a server key.
+   - If the app shows "The app could not load its machine-learning libraries", the message ends with a diagnosis: the Python version and PyTorch's core files. Reboot the app (Manage app → Reboot app).
 4. Deploy. The first build downloads PyTorch and takes several minutes. The first page load then downloads the 90 MB embedding model.
 
 Notes:

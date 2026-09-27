@@ -1,12 +1,13 @@
-# Exact versions verified with this project (Python 3.12, CPU only).
-# Works on Windows and on Linux x86_64 (Streamlit Community Cloud: choose Python 3.12).
+# Exact versions verified with this project (CPU only; tested on Python 3.12).
+# Works on Windows and on Linux (Streamlit Community Cloud).
 #
-# PyTorch is pinned to its CPU-only builds by direct link: the default Linux build
-# pulls in several GB of CUDA libraries this project never uses. Direct links (not an
-# extra package index) keep every other package resolving from PyPI as usual.
-# On other platforms sentence-transformers installs a matching torch from PyPI.
-torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.14.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=a09987c95ec4cffdb6df798d3d641558110a334cfccce22f2f046d83142bc260 ; sys_platform == "linux" and platform_machine == "x86_64"
-torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.14.0%2Bcpu-cp312-cp312-win_amd64.whl#sha256=738cd9237bf63443a5e5f9652e5115f7b0510b089636a43d4011e9fccede714f ; sys_platform == "win32" and platform_machine == "AMD64"
+# PyTorch comes from its CPU-only builds: the default Linux build pulls in several GB
+# of CUDA libraries this project never uses. --find-links lets pip / uv choose the
+# CPU wheel that matches the Python version in use (3.10-3.15), while every other
+# package still resolves from PyPI (unlike --extra-index-url, which breaks uv here).
+# On macOS, sentence-transformers installs torch from PyPI (those builds are CPU-only).
+--find-links https://download.pytorch.org/whl/cpu/torch/
+torch==2.14.0+cpu ; sys_platform == "linux" or sys_platform == "win32"
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
 aiosignal==1.4.0
