@@ -16,6 +16,7 @@ import html
 import io
 import json
 import math
+import re
 import sys
 import threading
 import time
@@ -62,17 +63,29 @@ PUBLIC = is_public(CONFIG.web.public_mode, st.get_option("server.address"), st.c
 SHOWCASE_DIR = resolve_path(CONFIG.paths.output_dir)
 
 
+VISITOR_ID = re.compile(r"[0-9a-f]{32}")
+
+
 def workspace() -> dict[str, Any]:
     """Where this session's run reads its PDFs and writes its results.
 
     One pipeline, one dataset per workspace. Private: the project folders (data/raw -> data/output),
     so every tab and the command line work on the same dataset. Public: a folder of the visitor's
     own under data/uploads/, so a visitor's run never replaces what other visitors see.
+
+    The visitor's ID is also kept in the page address (?v=...), so refreshing the page finds the same
+    dataset and labels again. Only a 32-character hex ID is accepted, so the address can never point
+    outside data/uploads/.
     """
     if not PUBLIC:
         return {"key": "main", "pdfs": resolve_path(CONFIG.paths.raw_dir),
                 "cache": resolve_path(CONFIG.paths.cache_dir), "output": SHOWCASE_DIR}
-    visitor = st.session_state.setdefault("visitor_id", uuid.uuid4().hex)
+    visitor = st.query_params.get("v", "")
+    if not VISITOR_ID.fullmatch(visitor or ""):
+        visitor = st.session_state.get("visitor_id") or uuid.uuid4().hex
+    st.session_state.visitor_id = visitor
+    if st.query_params.get("v") != visitor:
+        st.query_params["v"] = visitor
     root = resolve_path(CONFIG.paths.uploads_dir) / visitor
     return {"key": visitor, "pdfs": root / "pdfs", "cache": root / "cache", "output": root / "output"}
 
@@ -292,7 +305,7 @@ OUTPUT_CATALOG = (
      "Questions the source does not answer, with the verification verdict.", RUN_HOW),
     ("pipeline_stats.json", "Run statistics", "Every count and distribution, plus the exact settings used.",
      RUN_HOW),
-    ("human_labels.json", "Your human labels", "The 40-pair blind sample with the scores you entered.",
+    ("human_labels.json", "Your human labels", "The blind labelling sample with the scores you entered.",
      "the Judge reliability tab"),
     ("judge_agreement.json", "Judge vs human agreement", "Cohen's kappa results, written when all pairs are labelled.",
      "labelling all pairs in the Judge reliability tab"),
@@ -684,7 +697,8 @@ def render_upload_form() -> None:
         cfg = with_overrides(CONFIG, {"validate.min_quality_score": min_q, "deduplicate.similarity_threshold": sim})
         start_run(files, cfg, user_key, int(chunks), fresh)
         st.rerun(scope="app")
-    st.caption("Your PDFs and results stay in your own session; other visitors never see them. Until your run "
+    st.caption("Your PDFs and results stay in your own session, kept in this page's address: refreshing is safe, "
+               "and only people you give the address to could open them. Until your run "
                "finishes, the tabs show the example dataset." if PUBLIC else
                f"Your PDFs are kept in `{CONFIG.paths.raw_dir}/` and the results replace `{CONFIG.paths.output_dir}/`. "
                "Every tab shows them when the run finishes.")
@@ -1230,12 +1244,7 @@ def judge_agreement(items: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def render_public_agreement(labels_file: Path) -> None:
-    """Public mode: read-only, and results only once a person has finished a usable labelling."""
-    if not SHOWING_EXAMPLE:
-        st.info("The human check is part of running the project on your own computer: there, a person scores "
-                "a blind sample of this dataset's pairs and the agreement with the judge appears here. It is not "
-                "available for datasets made in this online demo, so treat the judge's scores as unverified.")
-        return
+    """Public mode, example dataset: read-only; results only once the author has finished a usable labelling."""
     items = agreement.load_labels(labels_file).get("items", []) if labels_file.is_file() else []
     if items and all(agreement.is_complete(i) for i in items):
         result = judge_agreement(items)
@@ -1259,17 +1268,33 @@ with tab_judge:
                 "The AI judge decided which pairs to keep. To check it, a person scores a sample of the same "
                 "pairs without seeing the judge's scores, and Cohen's kappa measures how far the two agree "
                 "beyond chance: > 0.8 strong, 0.6–0.8 substantial, 0.4–0.6 moderate, < 0.4 weak.")
-        if PUBLIC:
+        # Judged answerable pairs are the ones a labelling sample can hold.
+        eligible = sum(1 for p in results["judged"]
+                       if p.get("answerable", True) and p.get("judge_ok") and p.get("scores"))
+        sample_n = min(target_n, eligible)
+        if PUBLIC and not SHOWING_EXAMPLE:  # a visitor labelling their own dataset: where labels live, how long
+            st.info("You can check the judge on **your own dataset** here. Your labels are saved for your session "
+                    "only: refreshing this page is safe, but the online app deletes all files when it restarts or "
+                    "goes to sleep. When you finish, download `human_labels.json` and `judge_agreement.json` from "
+                    "the **Output** tab."
+                    + (f" Your dataset has {eligible} judged pairs, so the sample holds {sample_n} and kappa is only "
+                       "a rough estimate." if eligible < target_n else ""))
+        if SHOWING_EXAMPLE:  # the example dataset stays read-only for everyone online
             render_public_agreement(labels_file)
         elif not labels_file.is_file():
-            st.info(f"No human labels yet. Create a blind sample of {target_n} pairs spread across score bands, "
-                    "then score them here (or edit data/output/human_labels.json).")
-            if st.button(f"Create labelling sample ({target_n} pairs)", type="primary"):
-                try:
-                    agreement.sample_for_labelling(results["judged"], target_n, CONFIG.agreement.seed, labels_file)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
+            if sample_n == 0:
+                st.info("This dataset has no judged answerable pairs to sample.")
+            else:
+                st.info(f"No human labels yet. Create a blind sample of {sample_n} pairs spread across score bands, "
+                        "then score them here"
+                        + ("." if PUBLIC else " (or edit data/output/human_labels.json)."))
+                if st.button(f"Create labelling sample ({sample_n} pairs)", type="primary"):
+                    try:
+                        agreement.sample_for_labelling(results["judged"], target_n, CONFIG.agreement.seed,
+                                                       labels_file)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
         else:
             doc = agreement.load_labels(labels_file)
             items = doc.get("items", [])
@@ -1280,22 +1305,26 @@ with tab_judge:
             elif done == len(items):
                 agreement.agreement_report(OUTPUT_DIR)
                 st.success(f"All {len(items)} pairs are labelled. The results are below.")
-                st.markdown(
-                    "**Where the outputs are**  \n"
-                    "- Your labels: `data/output/human_labels.json` (saved after every click)  \n"
-                    "- Agreement results: `data/output/judge_agreement.json`, also printed by "
-                    "`python -m src.agreement score`  \n"
-                    "- README table: run `python -m src.experiments`, then copy section 3 of "
-                    "`data/output/experiments.md` into the README's *Judge reliability* section")
+                if PUBLIC:
+                    st.markdown("**Save your results:** download `human_labels.json` and `judge_agreement.json` "
+                                "from the **Output** tab. The online app deletes them when it restarts.")
+                else:
+                    st.markdown(
+                        "**Where the outputs are**  \n"
+                        "- Your labels: `data/output/human_labels.json` (saved after every click)  \n"
+                        "- Agreement results: `data/output/judge_agreement.json`, also printed by "
+                        "`python -m src.agreement score`  \n"
+                        "- README table: run `python -m src.experiments`, then copy section 3 of "
+                        "`data/output/experiments.md` into the README's *Judge reliability* section")
                 render_agreement(result, len(items))
                 with st.expander("Review or change your labels"):
                     render_label_form(doc, items, labels_file)
                 render_reset(labels_file, done)
             else:
-                st.markdown(f"**Your task:** score all {len(items)} pairs below. The sample holds every pair the "
-                            "judge scored below 6/6 plus a random set of 6/6 pairs, so each one matters. Scores are "
-                            "saved after every click, so you can stop and continue later. Results appear at the top "
-                            "of this tab when all pairs are labelled.")
+                st.markdown(f"**Your task:** score all {len(items)} pairs below. The sample is spread across the "
+                            "judge's score bands, so it includes the pairs the judge scored lowest; each one matters. "
+                            "Scores are saved after every click, so you can stop and continue later. Results appear "
+                            "at the top of this tab when all pairs are labelled.")
                 with st.expander("How to score", expanded=done == 0):
                     st.markdown(HOW_TO_SCORE)
                 if result["n"] >= 5 and result.get("warnings"):

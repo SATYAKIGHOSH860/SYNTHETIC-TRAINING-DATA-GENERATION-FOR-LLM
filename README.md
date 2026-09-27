@@ -150,9 +150,10 @@ Other CLI options: `--min-quality-score`, `--similarity-threshold`, `--set secti
 | Visitors can | Visitors cannot |
 |---|---|
 | explore every tab of the example run and download every file | replace or change the example dataset that everyone sees |
-| read the judge-agreement results once the human labelling is complete | see or change the human labels |
+| read the example's judge-agreement results once the author's human labelling is complete | see or change the example dataset's human labels |
+| check the judge on **their own** dataset: label a blind sample, see Cohen's kappa, download the labels | keep labels or results after the app restarts (online files are temporary, so they download them) |
 | upload their own PDFs and run the same pipeline **with their own Groq key**, held in their browser session only; every tab then shows their dataset (at most 30 chunks per run) | use the server's API key (none is needed on the server) |
-| download their own results | see anyone else's uploads or results (each visitor's run lives in their own folder under `data/uploads/`) |
+| download their own results, and refresh the page without losing them (the page address keeps their session) | see anyone else's uploads, labels or results (each visitor's work lives in their own folder under `data/uploads/`) |
 
 To deploy:
 

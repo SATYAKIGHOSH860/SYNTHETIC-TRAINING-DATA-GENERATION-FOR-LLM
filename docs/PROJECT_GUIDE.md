@@ -621,6 +621,12 @@ All 40 of your current labels are **1 / 1 / 1**, so the tab shows a warning and 
 
 **When you generate a different dataset,** the labels belong to the old one. They move to `data/output/previous/<time>/` together with the old agreement results (nothing is deleted), and this tab then offers **Create labelling sample (40 pairs)** for the new dataset. The human check is always about the dataset you are looking at.
 
+**In the online app:**
+- A visitor who has made their own dataset can do the same check on it: create a sample, label it, and see kappa. The labels are saved only in their own session folder.
+- A blue note reminds them to download `human_labels.json` and `judge_agreement.json` from the Output tab, because online files are deleted when the app restarts or sleeps.
+- If their dataset has fewer than 40 judged pairs, the sample is smaller and the note says kappa is only a rough estimate.
+- The example dataset stays read-only.
+
 ### 3.8 Tab 5: Output
 
 **Purpose:** download any result file of the current dataset to your computer.
@@ -662,7 +668,8 @@ The same app behaves differently depending on who opens it. Either way there is 
 | What the tabs show | Your one dataset (`data/output/`) | The **example dataset** until the visitor's own run finishes, then the visitor's own dataset |
 | Upload PDFs | Your key is optional (it falls back to `.env`); up to 5,000 chunks; "Start over" is available; a run replaces `data/raw/` and `data/output/` | The visitor must enter **their own key** (yours is never used), at most 30 chunks per run, and the run stays in the visitor's own folder (`data/uploads/<visitor>/`), invisible to everyone else |
 | Sidebar | "Current dataset" | "Public demo" note, then "Example dataset" or "Current dataset" |
-| Judge reliability | Labelling form and results | Read-only. The example's results appear only once your labels are complete and valid. For a visitor's own dataset it explains that the human check is done locally. |
+| Judge reliability | Labelling form and results | For the **example**: read-only; its results appear only once your labels are complete and valid. For a visitor's **own** dataset: the full labelling form and results, saved in their own folder, with a note to download the labels (online files are temporary; small datasets give a rough kappa). |
+| Page address | Normal | Ends with `?v=` and the visitor's session ID, so refreshing keeps their dataset and labels. Only people given that address could open them. |
 | Output | Files of your dataset | Files of the dataset being shown |
 
 The setting is `web.public_mode: auto` in `config.yaml` (it can also be forced to `true` or `false`).
