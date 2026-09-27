@@ -40,6 +40,21 @@ class PipelineCancelled(RuntimeError):
     """
 
 
+def load_heavy_libraries() -> None:
+    """Import the slow libraries a run needs: the PDF loader, the text splitter and PyTorch, and the embedding model.
+
+    Why a separate step: on a cold start these take tens of seconds, and loading PyTorch from two
+    threads at the same time is fragile. The dashboard calls this once, in one background thread,
+    and every run waits for it before starting, so the libraries are never imported concurrently.
+    """
+    from src.deduplicate import get_embedding_model
+    from src.ingest import _pdf_loader_class, make_splitter
+
+    _pdf_loader_class()
+    make_splitter()
+    get_embedding_model()
+
+
 def _header(title: str) -> None:
     print(f"\n{'-' * 60}\n {title}\n{'-' * 60}", flush=True)
 

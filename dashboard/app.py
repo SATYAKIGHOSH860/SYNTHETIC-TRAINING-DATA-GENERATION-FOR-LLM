@@ -50,7 +50,7 @@ from src import agreement  # noqa: E402
 from src.export import DISCLAIMER, load_jsonl  # noqa: E402
 from src.ingest import list_pdfs  # noqa: E402
 from src.llm import redact  # noqa: E402
-from src.pipeline import PipelineCancelled, PipelineError, run_pipeline  # noqa: E402
+from src.pipeline import PipelineCancelled, PipelineError, load_heavy_libraries, run_pipeline  # noqa: E402
 from src.uploads import UploadedPDF, replace_pdfs, validate_uploads  # noqa: E402
 
 # Public mode (config web.public_mode): visitors see the example dataset, runs need the visitor's own
@@ -390,23 +390,33 @@ st.markdown(
 )
 
 @st.cache_resource(show_spinner=False)
-def warm_up() -> threading.Thread:
-    """Load the embedding model (and the slow langchain/torch imports) once per server,
-    in the background, so the page renders instantly and the first job starts warm."""
+def warm_up() -> dict[str, Any]:
+    """Load the slow libraries (PyTorch, the PDF loader, the embedding model) once per server,
+    in one background thread, so the page renders instantly.
+
+    Every run joins this thread before it starts (see start_run), so the libraries are never
+    imported from two threads at once. If loading fails, the reason is kept in "error" and shown
+    with the run's error: a failed first PyTorch import otherwise surfaces later only as a
+    misleading "Failed to load PyTorch C extensions" message.
+    """
+    state: dict[str, Any] = {"error": None}
+
     def load() -> None:
         try:
-            import langchain_text_splitters  # noqa: F401  (pulls in torch/transformers)
-            from src.deduplicate import get_embedding_model
-            get_embedding_model()
-        except Exception:
+            load_heavy_libraries()
+        except Exception as exc:
+            state["error"] = f"{type(exc).__name__}: {exc}"
             traceback.print_exc()
 
-    thread = threading.Thread(target=load, name="warm-up", daemon=True)
-    thread.start()
-    return thread
+    state["thread"] = threading.Thread(target=load, name="warm-up", daemon=True)
+    state["thread"].start()
+    return state
 
 
-warm_up()
+WARM = warm_up()
+RESTART_HINT = ("Restart the app and try again: on your computer press Stop, then Start, in the desktop window; "
+                "on Streamlit Cloud use Manage app, then Reboot app. A library that failed to load cannot be "
+                "reloaded while the app is running. Your data is safe.")
 results = load_results(str(OUTPUT_DIR), files_signature(OUTPUT_DIR))
 
 
@@ -535,9 +545,12 @@ def start_run(files: list[UploadedPDF], cfg, api_key: str | None, max_chunks: in
     progress = make_progress(run)
     finished = work_started()
     folders = dict(WORK)
+    warm = WARM
 
     def work() -> None:
         try:
+            # The heavy libraries load once, in the warm-up thread; never import them concurrently.
+            warm["thread"].join()
             run["stats"] = run_pipeline(folders["pdfs"], folders["output"], cfg, max_chunks=max_chunks,
                                         progress_callback=progress, resume=not fresh, cache_dir=folders["cache"],
                                         api_key=api_key, warnings=run["warnings"])
@@ -548,7 +561,12 @@ def start_run(files: list[UploadedPDF], cfg, api_key: str | None, max_chunks: in
             run.update(status="error", error=str(exc))
         except Exception as exc:  # never show a raw traceback in the browser
             traceback.print_exc()
-            run.update(status="error", error=redact(f"Unexpected error ({type(exc).__name__}): {exc}", api_key))
+            first = (f" Loading the libraries at start-up had already failed with: {warm['error']}"
+                     if warm["error"] else "")
+            # A library such as PyTorch that failed to load cannot be reloaded inside the same process.
+            restart = f" {RESTART_HINT}" if isinstance(exc, (ImportError, OSError)) else ""
+            run.update(status="error",
+                       error=redact(f"Unexpected error ({type(exc).__name__}): {exc}{first}{restart}", api_key))
         finally:
             run["finished"] = time.time()
             finished()
@@ -655,7 +673,9 @@ def render_upload_form() -> None:
     if not key_available:
         st.warning("Enter your Groq API key above to generate a dataset." if PUBLIC else
                    "No Groq API key is available. Add GROQ_API_KEY to .env or enter your own key above.")
-    can_run = (bool(files) and not problems) or (not files and bool(stored))
+    if WARM["error"]:  # a run would fail too: say so now, with the real cause, instead of after the upload
+        st.error(f"The app could not load its machine-learning libraries: {WARM['error']} {RESTART_HINT}")
+    can_run = ((bool(files) and not problems) or (not files and bool(stored))) and not WARM["error"]
     if st.button("▶ Generate dataset", type="primary", disabled=not (can_run and key_available),
                  key="run_start") and can_run and key_available:
         cfg = with_overrides(CONFIG, {"validate.min_quality_score": min_q, "deduplicate.similarity_threshold": sim})
