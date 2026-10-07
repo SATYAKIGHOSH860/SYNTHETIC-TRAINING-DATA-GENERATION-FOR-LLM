@@ -1,0 +1,2370 @@
+"""
+Streamlit dashboard - upload PDFs, run the pipeline, and see the evidence.
+
+    streamlit run dashboard/app.py
+
+Tab 1 takes the documents, tab 2 runs the pipeline, the rest show the result.
+Input is per session: nothing carries over between launches.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import json
+import os
+import sys
+import time
+import zipfile
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+# The blind-labelling tool in the Judge Reliability tab reuses the sampling and
+# kappa code from the experiment script rather than reimplementing it, so the
+# dashboard and the command line can never report different numbers.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "experiments"))
+# Modules from src/, in dependency order: a reload must refresh a dependency
+# before anything that imported names out of it.
+_LOCAL_MODULES = (
+    "theme",
+    "config",
+    # checkpoint is imported by generate and validate, so it has to be
+    # refreshed before them.
+    "checkpoint",
+    "progress",
+    "budget",
+    "ingest",
+    "generate",
+    "validate",
+    "deduplicate",
+    "grounding",
+    "export",
+    "runner",
+    # Imported lazily, inside the Judge Reliability tab rather than at the top
+    # of this file. It still has to be listed: a module left out here keeps a
+    # stale copy for the life of the server, which is how renaming
+    # SAMPLE_FRACTION to SAMPLE_SIZE broke every tab at once.
+    "judge_reliability",
+)
+
+
+def _refresh_stale_modules() -> None:
+    """
+    Reload any src/ module whose file changed since this server loaded it.
+
+    Streamlit re-executes app.py on every interaction but keeps imported
+    modules in sys.modules for the life of the server. Editing a file under
+    src/ therefore leaves a stale module object behind, and the page fails in
+    confusing ways while the file on disk is perfectly correct - an
+    AttributeError for a function that "does not exist", a TypeError for an
+    argument it "does not accept", or an ImportError for a name that is
+    plainly there.
+
+    This must run BEFORE the `from config import ...` below. Those statements
+    read straight out of the stale module object, so a check placed after them
+    never gets the chance to run - which is exactly how the ImportError for
+    UNANSWERABLE_FILE happened.
+
+    The load time is stamped onto the module object rather than held in a
+    Streamlit cache, so this works before st.set_page_config and needs no
+    Streamlit state at all.
+    """
+    import importlib
+
+    stale = False
+    for name in _LOCAL_MODULES:
+        module = sys.modules.get(name)
+        path = getattr(module, "__file__", None) if module else None
+        if path and os.path.exists(path):
+            if getattr(module, "_app_loaded_at", None) != os.path.getmtime(path):
+                stale = True
+                break
+    if not stale:
+        return
+
+    # Everything reloads whenever anything changed, in dependency order,
+    # because `from config import X` copies the value - only re-running the
+    # importer picks up a new one. Reloads are cheap; torch and the other
+    # heavyweights stay in sys.modules untouched.
+    for name in _LOCAL_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        try:
+            importlib.reload(module)
+        except Exception:
+            # A module caught mid-save can fail to import; the next rerun
+            # picks it up once the file is written completely.
+            pass
+
+
+def _stamp_local_modules() -> None:
+    """Record each module's file time so the next rerun can spot a change."""
+    for name in _LOCAL_MODULES:
+        module = sys.modules.get(name)
+        path = getattr(module, "__file__", None) if module else None
+        if path and os.path.exists(path):
+            try:
+                module._app_loaded_at = os.path.getmtime(path)
+            except Exception:
+                pass
+
+
+_refresh_stale_modules()
+
+import theme  # noqa: E402
+import runner  # noqa: E402
+from budget import TOKENS_PER_DAY, estimate_run, max_affordable_chunks  # noqa: E402
+from config import (  # noqa: E402
+    CHATML_FILE,
+    DATASET_FILE,
+    DUPLICATE_FILE,
+    GRADED_FILE,
+    OUTPUT_DIR,
+    REJECTED_FILE,
+    STATS_FILE,
+    UNANSWERABLE_FILE,
+)
+
+_stamp_local_modules()
+
+GROUNDING_FILE = OUTPUT_DIR / "grounding_analysis.jsonl"
+
+st.set_page_config(
+    page_title="Synthetic Training Data Studio",
+    page_icon="🧪",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+theme.apply()
+
+DISCLAIMER = (
+    "**Educational and research use only.** This dataset was generated by a "
+    "language model from the PDF documents you supplied, and validated by "
+    "another language model. It is **not professional advice** and **must not** "
+    "be used for decision-making. No patient data was used at any stage."
+)
+
+
+# --- Loading ---------------------------------------------------------------
+# `mtime` is part of the cache key so a finished run invalidates the cache
+# automatically - without it the dashboard would keep serving the old dataset
+# after a new run had written a new one.
+@st.cache_data(show_spinner=False)
+def load_jsonl(path: str, mtime: float) -> list[dict]:
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+    except OSError:
+        return []
+    return rows
+
+
+@st.cache_data(show_spinner=False)
+def load_stats(path: str, mtime: float) -> dict:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _mtime(path) -> float:
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+
+
+@st.cache_resource(show_spinner=False)
+def _start_session() -> float:
+    """
+    Empty the input folder once, when the Streamlit server starts.
+
+    st.cache_resource runs a single time per server process, not per rerun or
+    per browser tab, so this clears leftovers on a fresh launch but never
+    mid-session - a refresh while a run is in flight leaves its inputs alone.
+    A run once built a dataset from documents the user had already replaced;
+    starting empty makes that impossible.
+    """
+    if not runner.is_running():
+        runner.clear_inputs()
+    return time.time()
+
+
+_start_session()
+
+stats = load_stats(str(STATS_FILE), _mtime(STATS_FILE))
+dataset = load_jsonl(str(DATASET_FILE), _mtime(DATASET_FILE))
+rejected = load_jsonl(str(REJECTED_FILE), _mtime(REJECTED_FILE))
+duplicates = load_jsonl(str(DUPLICATE_FILE), _mtime(DUPLICATE_FILE))
+grounding_rows = load_jsonl(str(GROUNDING_FILE), _mtime(GROUNDING_FILE))
+abstentions = load_jsonl(str(UNANSWERABLE_FILE), _mtime(UNANSWERABLE_FILE))
+
+df = pd.DataFrame(dataset)
+# Datasets written before abstention examples existed have no `answerable`
+# column. Treat those rows as answerable so older output still renders.
+if not df.empty and "answerable" not in df.columns:
+    df["answerable"] = True
+has_data = bool(stats) and bool(dataset)
+
+_c = stats.get("counts", {})
+_q = stats.get("quality", {})
+_hero_stats = (
+    [
+        (f"{_c.get('final_pairs', 0):,}", "Q&A pairs generated"),
+        (f"{_q.get('avg_quality_score', 0)}/6", "Average quality score"),
+        (f"{_c.get('duplicates_removed', 0):,}", "Duplicates removed"),
+    ]
+    if has_data
+    else [
+        ("PDF · DOCX", "Formats accepted"),
+        ("0-6", "Quality scored"),
+        ("~3 MIN", "Typical run"),
+    ]
+)
+theme.hero(
+    "TURN YOUR DOCUMENTS INTO <span class='soft'>TRAINING DATA.</span>",
+    "Upload a PDF, generate a quality-scored question-and-answer dataset, and "
+    "inspect exactly what was removed and why.",
+    _hero_stats,
+)
+st.caption(DISCLAIMER)
+
+_health = stats.get("run_health", {})
+if has_data and _health and not _health.get("complete", True):
+    st.error(f"**Incomplete run.** {_health.get('note', '')}")
+
+
+# --- Sidebar: run summary and source documents -----------------------------
+# Mirrors the "Example dataset" panel of the earlier deployment: what produced
+# the numbers you are looking at, always visible beside them.
+with st.sidebar:
+    st.markdown("#### This dataset")
+
+    if has_data:
+        _p = stats.get("parameters", {})
+        _c2 = stats.get("counts", {})
+        _r2 = stats.get("rates", {})
+        _written = datetime.fromtimestamp(_mtime(STATS_FILE)).strftime("%d %b %Y, %H:%M")
+
+        st.caption(f"Generated {_written}")
+        rows = [
+            ("Generator", stats.get("model", "-")),
+            ("Judge", stats.get("judge_model", stats.get("model", "-"))),
+            ("Embeddings", stats.get("embedding_model", "-")),
+            ("Chunks processed", f"{_c2.get('chunks_processed', 0)}"),
+            ("Keep threshold", f">= {_p.get('min_quality_score', 4)}/6"),
+            (
+                "Criterion floors",
+                ", ".join(
+                    f"{k[:5]} {v}" for k, v in (_p.get("criterion_floors") or {}).items()
+                )
+                or "-",
+            ),
+            ("Dedup threshold", f"{_p.get('similarity_threshold', '-')}"),
+            ("Raw pairs", f"{_c2.get('raw_pairs', 0):,}"),
+            ("Final pairs", f"{_c2.get('final_pairs', 0):,}"),
+            ("Pass rate", f"{_r2.get('pass_rate_pct', 0)}%"),
+        ]
+
+        # Measured, not estimated. The binding constraint on this project is
+        # the daily token allowance, so what a run actually spent is worth
+        # keeping in front of you.
+        _cost = stats.get("run_cost") or {}
+        if _cost.get("api_calls"):
+            rows += [
+                ("API calls", f"{_cost['api_calls']:,}"),
+                ("Tokens used", f"{_cost['tokens_used']:,}"),
+                ("Wall time", _cost.get("wall_human") or "-"),
+            ]
+        _ab = stats.get("abstention") or {}
+        if _ab.get("generated"):
+            rows.append(("Abstention pairs", f"{_ab.get('in_dataset', 0)}"))
+        st.markdown(
+            "".join(
+                f'<div class="ast-kv"><span class="k">{k}</span>'
+                f'<span class="v">{v}</span></div>'
+                for k, v in rows
+            ),
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("Source documents"):
+            per_source = stats.get("per_source", {})
+            if per_source:
+                for name, count in sorted(per_source.items(), key=lambda x: -x[1]):
+                    st.markdown(f"**{name}**")
+                    st.caption(f"{count} pairs")
+            else:
+                st.caption("No per-source information in this run.")
+
+        st.caption(
+            "Counts cover every pair in this dataset, including any reused "
+            "from a previous run."
+        )
+    else:
+        st.caption(
+            "No dataset yet. Upload documents on the **Upload** tab and the "
+            "pipeline starts as soon as they load."
+        )
+
+    st.divider()
+    if st.button("Reload results", width="stretch"):
+        # Outputs are cached by file mtime; clearing forces a fresh read for
+        # the case where a run finished in another browser tab.
+        st.cache_data.clear()
+        st.rerun()
+
+    st.divider()
+    st.caption(
+        "Pipeline code lives in `src/`; this page only presents it. Runs use "
+        "the API key you supply and stay private to your session."
+    )
+
+# --- Output files: one catalogue, used in two places ------------------------
+# Defined at module level because both the download bar above the tabs and the
+# Download tab itself need it. Each entry is (path, title, description,
+# is_primary).
+OUTPUT_CATALOGUE = [
+    (
+        DATASET_FILE,
+        "The deliverable",
+        "Clean, quality-scored Q&A pairs. Each row carries its source "
+        "file, page number, question type and score.",
+        True,
+    ),
+    (
+        CHATML_FILE,
+        "Ready to fine-tune",
+        "The same pairs in ChatML `messages` format, with the safety "
+        "system prompt. Feed straight to SFTTrainer.",
+        True,
+    ),
+    (
+        UNANSWERABLE_FILE,
+        "Abstention examples",
+        "Questions the passage cannot answer, each with the judge's verdict "
+        "on whether it is genuinely unanswerable and plausible.",
+        False,
+    ),
+    (
+        GROUNDING_FILE,
+        "Hallucination check",
+        "Per-answer word overlap, novel words and any numbers absent "
+        "from the source.",
+        False,
+    ),
+    (
+        REJECTED_FILE,
+        "Rejected pairs",
+        "What the judge threw out, with sub-scores and the reason.",
+        False,
+    ),
+    (
+        DUPLICATE_FILE,
+        "Removed duplicates",
+        "Each removed question beside the one it duplicated, with the "
+        "similarity score.",
+        False,
+    ),
+    (
+        GRADED_FILE,
+        "Every graded pair",
+        "All pairs with judge sub-scores, kept and rejected alike. This "
+        "is what the threshold experiments re-filter offline.",
+        False,
+    ),
+    (
+        STATS_FILE,
+        "Run statistics",
+        "Every number the dashboard shows - counts, rates, distributions, "
+        "grounding summary and what the run cost.",
+        False,
+    ),
+]
+
+
+def human_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def file_facts(path: Path) -> dict:
+    """Size, row count and modified time for one output file."""
+    try:
+        stat = path.stat()
+        raw = path.read_bytes()
+    except OSError:
+        return {"exists": False}
+    rows = None
+    if path.suffix == ".jsonl":
+        rows = sum(
+            1 for line in raw.decode("utf-8", "replace").splitlines() if line.strip()
+        )
+    return {
+        "exists": True,
+        "bytes": raw,
+        "size": stat.st_size,
+        "modified": datetime.fromtimestamp(stat.st_mtime),
+        "rows": rows,
+    }
+
+
+def available_outputs() -> list[tuple]:
+    """
+    Every catalogue entry that this run actually produced.
+
+    Read from disk on each render rather than through the cache: handing over a
+    stale file would be worse than a slow read, and they are small.
+    """
+    rows = [(path, t, d, prim, file_facts(path)) for path, t, d, prim in OUTPUT_CATALOGUE]
+    return [r for r in rows if r[4]["exists"]]
+
+
+def build_archive(available: list[tuple], newest: datetime) -> bytes:
+    """Every output file in one ZIP, plus a README that explains them."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path, _title, _desc, _prim, facts in available:
+            zf.writestr(path.name, facts["bytes"])
+        # A README inside the archive so the files are still explicable once
+        # they have been emailed to someone who has never seen this dashboard.
+        manifest = ["Synthetic Training Data Pipeline - output files", ""]
+        manifest.append(f"Generated: {newest:%d %b %Y at %H:%M}")
+        counts = stats.get("counts", {})
+        if counts:
+            manifest.append(
+                f"Run: {counts.get('chunks_processed')} chunks -> "
+                f"{counts.get('raw_pairs')} raw pairs -> "
+                f"{counts.get('final_pairs')} final pairs"
+            )
+        cost = stats.get("run_cost") or {}
+        if cost.get("api_calls"):
+            manifest.append(
+                f"Cost: {cost['api_calls']} API calls, {cost['tokens_used']:,} "
+                f"tokens, {cost.get('wall_human')} wall time"
+            )
+        manifest.append("")
+        for path, title, desc, _prim, facts in available:
+            rows = f" ({facts['rows']} rows)" if facts["rows"] is not None else ""
+            manifest.append(f"{path.name}{rows}")
+            manifest.append(f"    {title}: {desc}")
+            manifest.append("")
+        manifest.append(DISCLAIMER.replace("**", ""))
+        zf.writestr("README.txt", "\n".join(manifest))
+    return buffer.getvalue()
+
+
+# --- Download bar: the files are one tap away from every tab ----------------
+# Previously the only way to the dataset was the last tab. The two things
+# anyone actually wants - the dataset, and everything at once - now sit above
+# the tabs so they are reachable from wherever you are.
+if has_data:
+    _bar_files = available_outputs()
+    if _bar_files:
+        _bar_newest = max(r[4]["modified"] for r in _bar_files)
+        _bar_main = next((r for r in _bar_files if r[0] == DATASET_FILE), None)
+        _bar_total = sum(r[4]["size"] for r in _bar_files)
+
+        _b1, _b2, _b3 = st.columns([2, 1, 1])
+        with _b1:
+            st.caption(
+                f"**{len(dataset):,} pairs** ready · written "
+                f"{_bar_newest:%d %b, %H:%M}"
+            )
+        if _bar_main:
+            _b2.download_button(
+                f"⬇  Dataset (JSONL)",
+                data=_bar_main[4]["bytes"],
+                file_name=DATASET_FILE.name,
+                mime="application/jsonl",
+                width="stretch",
+                key="bar_dl_jsonl",
+                help=f"{_bar_main[4]['rows']} rows, {human_size(_bar_main[4]['size'])}",
+            )
+        _b3.download_button(
+            f"⬇  All files (ZIP)",
+            data=build_archive(_bar_files, _bar_newest),
+            file_name=f"pipeline_output_{_bar_newest:%Y%m%d_%H%M}.zip",
+            mime="application/zip",
+            width="stretch",
+            key="bar_dl_zip",
+            help=f"{len(_bar_files)} files, {human_size(_bar_total)}, plus a README",
+        )
+
+
+# Named, not numbered. The last two were previously unpacked as tab5/tab6 and
+# used in the opposite order to the labels, which swapped the contents of the
+# Judge Reliability and Download tabs.
+(
+    tab_upload,
+    tab_run,
+    tab1,
+    tab2,
+    tab3,
+    tab4,
+    tab_judge,
+    tab_download,
+) = st.tabs(
+    [
+        "Upload",
+        "Run Status",
+        "Overview",
+        "Explore",
+        "Evidence",
+        "Grounding",
+        "Judge Reliability",
+        "Download",
+    ]
+)
+
+
+def _verdict(value) -> str:
+    """Yes / no / dash for a judge verdict that may be missing."""
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "-"
+
+
+def no_data_yet(what: str) -> None:
+    st.info(
+        f"No pipeline output yet, so there is nothing to show in {what}.\n\n"
+        f"Open the **1 · Upload Files** tab and load your documents - the "
+        f"pipeline starts as soon as they are loaded."
+    )
+
+
+STAGE_NUMBER = {
+    "ingest": 1,
+    "generate": 2,
+    "validate": 3,
+    "deduplicate": 4,
+    "export": 5,
+}
+
+
+# --- Shared: what a run in flight looks like -------------------------------
+@st.fragment(run_every=2)
+def render_progress(key_prefix: str) -> None:
+    """
+    Live view of a running pipeline, refreshed on its own.
+
+    This is a fragment, so only this block re-executes every 2 seconds. The
+    previous version slept 3s and called st.rerun(), which re-ran the WHOLE
+    script - all seven tabs, every chart, every JSONL reload - just to move a
+    progress bar. Measured at 1.33s per rerun, that had the server rebuilding
+    the entire page for roughly half of every run.
+
+    Rendered on BOTH the upload and run tabs: loading files starts the pipeline
+    immediately and Streamlit cannot switch tabs programmatically, so whichever
+    tab the user is looking at has to show what is happening.
+    """
+    state = runner.status()
+
+    if not state["running"]:
+        # The run just ended. Re-run the whole app (not merely this fragment)
+        # so the results tabs pick up the new dataset.
+        st.rerun(scope="app")
+        return
+
+    prog = state["progress"]
+    pct = float(prog.get("overall_pct", 0.0))
+    stage = prog.get("stage", "ingest")
+
+    st.subheader("Run in progress")
+    st.progress(
+        min(max(pct / 100, 0.0), 1.0),
+        text=f"{pct:.0f}%  -  {stage.upper()}: {prog.get('message', '')}",
+    )
+
+    cur, tot = prog.get("current", 0), prog.get("total", 0)
+    eta = state.get("eta")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Stage", f"{STAGE_NUMBER.get(stage, '?')}/5  {stage.title()}")
+    m2.metric("Step", f"{cur}/{tot}" if tot else "-")
+    m3.metric("Elapsed", f"{state['elapsed'] / 60:.1f} min")
+    if eta is None:
+        m4.metric("Remaining", "-")
+    elif eta < 60:
+        m4.metric("Remaining", f"{eta:.0f} sec")
+    else:
+        m4.metric("Remaining", f"{eta / 60:.1f} min")
+
+    st.caption(
+        "The pipeline runs as a separate process, so you can close this page "
+        "and come back later - the run keeps going."
+    )
+
+    if st.button("Stop this run", type="secondary", key=f"{key_prefix}_stop"):
+        runner.stop()
+        st.rerun(scope="app")
+
+    with st.expander("Live log", expanded=True):
+        st.code("\n".join(state["log"]) or "waiting for output...", language="text")
+
+
+def render_last_outcome(prog: dict) -> None:
+    """One line saying how the previous run ended."""
+    status = prog.get("status")
+    if status == "done":
+        st.success(f"Last run finished. {prog.get('message', '')}")
+    elif status == "stopped":
+        st.info(f"Previous run stopped. {prog.get('message', '')}")
+    elif status == "error":
+        st.error(f"Last run failed: {prog.get('message', '')}")
+        with st.expander("Log from the failed run"):
+            st.code("\n".join(runner.log_tail(40)) or "(no log)", language="text")
+    elif prog.get("stale"):
+        st.warning(
+            "The previous run stopped reporting and is presumed dead. "
+            "Any partial output it wrote is still shown in the other tabs."
+        )
+
+
+# --- Tab: Upload and go ----------------------------------------------------
+with tab_upload:
+    state = runner.status()
+
+    if state["running"]:
+        render_progress("upload")
+    else:
+        render_last_outcome(state["progress"])
+
+        theme.step(1, "How long should this take?")
+        st.caption(
+            "Choose first - loading your files starts the pipeline straight "
+            "away. Runtime is set by the free tier's 8,000 tokens per minute, "
+            "so this dial is really 'how much of the document to process'."
+        )
+
+        preset = st.radio(
+            "Run size",
+            ["Quick (~3 min)", "Standard (~5 min)", "Large (~9 min)", "Custom"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="preset",
+        )
+        preset_chunks = {
+            "Quick (~3 min)": 12,
+            "Standard (~5 min)": 25,
+            "Large (~9 min)": 45,
+        }
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if preset == "Custom":
+                max_chunks = st.slider("Chunks", 5, 150, 25, step=5, key="chunks")
+            else:
+                max_chunks = preset_chunks[preset]
+                st.metric("Chunks to process", max_chunks)
+        with c2:
+            min_score = st.slider(
+                "Minimum quality score",
+                0,
+                6,
+                4,
+                key="minscore",
+                help="Pairs scoring below this are rejected. Set 6 to see the "
+                "filter actually bite.",
+            )
+        with c3:
+            similarity = st.slider(
+                "Duplicate similarity",
+                0.70,
+                0.99,
+                runner.DEFAULT_SIMILARITY,
+                step=0.01,
+                key="sim",
+                help="Questions at or above this cosine similarity count as "
+                "duplicates.",
+            )
+
+        theme.note(
+            "<b>Always required as well:</b> groundedness &ge; 1/2. A pair that "
+            "invents a fact is rejected even when its total passes - a "
+            "fabricated dose scored exactly 4/6 in testing and would otherwise "
+            "have slipped through on its total alone."
+        )
+
+        est = estimate_run(max_chunks, 3)
+        over_budget = est["total_tokens"] > TOKENS_PER_DAY
+
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Estimated time", f"~{est['min_minutes']:.0f} min")
+        b2.metric("Q&A pairs (approx)", f"{est['estimated_pairs']:,}")
+        b3.metric("Tokens", f"{est['total_tokens']:,}")
+        b4.metric("Of daily quota", f"{est['pct_of_daily_tokens']}%")
+
+        if over_budget:
+            st.error(
+                f"This run needs {est['total_tokens']:,} tokens but the free tier "
+                f"allows {TOKENS_PER_DAY:,} per day. Reduce to "
+                f"**{max_affordable_chunks()} chunks** or fewer."
+            )
+        elif est["pct_of_daily_tokens"] > 80:
+            st.warning(
+                f"This uses {est['pct_of_daily_tokens']}% of the daily quota, "
+                f"leaving little room for retries."
+            )
+
+        st.divider()
+
+        # ---------- API key ----------
+        theme.step(2, "Your Groq API key")
+
+        _env_key = os.environ.get("GROQ_API_KEY", "").strip()
+        _has_env_key = bool(_env_key) and not _env_key.startswith("gsk_your")
+
+        api_key = st.text_input(
+            "Groq API key",
+            type="password",
+            label_visibility="collapsed",
+            placeholder="gsk_..." if not _has_env_key else "Using the key from .env",
+            help="Used only for this run, passed to the pipeline through the "
+            "environment. It is never written to disk and never logged.",
+            key="apikey",
+        )
+
+        if api_key.strip():
+            st.caption("Using the key you entered. It stays in this session only.")
+        elif _has_env_key:
+            st.caption(
+                "No key entered, so the one in your local `.env` will be used. "
+                "On a public deployment there is no `.env` - paste a key above."
+            )
+        else:
+            st.caption(
+                "Required. A free key takes a minute at "
+                "[console.groq.com/keys](https://console.groq.com/keys)."
+            )
+
+        _key_ready = bool(api_key.strip()) or _has_env_key
+
+        st.divider()
+
+        # ---------- upload, which also starts the run ----------
+        theme.step(3, "Add your documents")
+        st.caption(
+            "The pipeline runs on **these files only**. Nothing is kept between "
+            "sessions - reopening the project always starts from an empty list, "
+            "so a run can never quietly use documents you replaced earlier."
+        )
+
+        exts = ", ".join(sorted(e.lstrip(".") for e in runner.supported_extensions()))
+        uploads = st.file_uploader(
+            f"Drag files here  -  up to {runner.MAX_FILES}, "
+            f"{runner.MAX_FILE_MB} MB each",
+            type=[e.lstrip(".") for e in sorted(runner.supported_extensions())],
+            accept_multiple_files=True,
+            help=f"Supported: {exts}. Text-based files only - a scanned PDF has "
+            f"no text layer and cannot be read.",
+            key="uploader",
+        )
+
+        queued = runner.current_files()
+
+        if uploads:
+            if len(uploads) > runner.MAX_FILES:
+                st.error(
+                    f"You selected {len(uploads)} files. The maximum is "
+                    f"{runner.MAX_FILES} - remove "
+                    f"{len(uploads) - runner.MAX_FILES} and try again."
+                )
+            else:
+                add = st.checkbox(
+                    "Add to the current list instead of replacing it",
+                    value=False,
+                    key="addmode",
+                )
+                if not _key_ready:
+                    st.error(
+                        "Enter your Groq API key above to generate a dataset."
+                    )
+                else:
+                    st.warning(
+                        f"Loading starts the pipeline immediately and will spend "
+                        f"about **{est['total_tokens']:,} tokens** "
+                        f"({est['pct_of_daily_tokens']}% of today's quota)."
+                    )
+                if st.button(
+                    f"▶  Load {len(uploads)} file(s) and start  "
+                    f"(~{est['min_minutes']:.0f} min)",
+                    type="primary",
+                    width="stretch",
+                    disabled=over_budget or not _key_ready,
+                ):
+                    # A real bar, not a spinner: each file is written and
+                    # then read back to confirm it has extractable text, and
+                    # on a large PDF that check is the slow part. The callback
+                    # reports byte-weighted progress so the bar moves in
+                    # proportion to actual work rather than file count.
+                    bar = st.progress(0.0, text="Preparing...")
+
+                    def _on_file_progress(fraction, name, phase):
+                        label = f"{phase} {name}" if name else phase
+                        bar.progress(
+                            min(max(fraction, 0.0), 1.0),
+                            text=f"{label}  -  {fraction * 100:.0f}%",
+                        )
+
+                    result = runner.save_uploads(
+                        uploads, replace=not add, on_progress=_on_file_progress
+                    )
+                    bar.progress(1.0, text="Files checked - starting pipeline...")
+
+                    if result.get("error"):
+                        st.error(result["error"])
+                    else:
+                        for e in result.get("errors", []):
+                            st.error(e)
+                        for w in result.get("warnings", []):
+                            st.warning(w)
+
+                        # Only start if something usable actually landed -
+                        # launching a run over zero readable documents would
+                        # just fail a minute later with a confusing message.
+                        if result.get("saved"):
+                            started = runner.start(
+                                max_chunks=max_chunks,
+                                min_score=min_score,
+                                similarity=similarity,
+                                api_key=api_key.strip() or None,
+                            )
+                            if started.get("error"):
+                                st.error(started["error"])
+                            else:
+                                st.success(
+                                    f"Loaded {len(result['saved'])} file(s). "
+                                    f"Pipeline started."
+                                )
+                                time.sleep(1)
+                                st.rerun()
+                        else:
+                            st.error(
+                                "Nothing readable was loaded, so the pipeline "
+                                "was not started."
+                            )
+
+        if queued and not uploads:
+            st.divider()
+            names = ", ".join(f"`{f['name']}`" for f in queued)
+            st.caption(f"Currently loaded ({len(queued)}): {names}")
+
+        st.divider()
+        st.markdown("#### Supported formats")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"Format": "PDF", "Extension": ".pdf",
+                     "Citations": "real page numbers",
+                     "Notes": "Must have a text layer - scans are rejected"},
+                    {"Format": "Word", "Extension": ".docx",
+                     "Citations": "~3000-char pseudo-pages",
+                     "Notes": "Text only; images and tables not extracted"},
+                    {"Format": "Plain text", "Extension": ".txt",
+                     "Citations": "~3000-char pseudo-pages",
+                     "Notes": "UTF-8 assumed; bad bytes replaced, not fatal"},
+                    {"Format": "Markdown", "Extension": ".md / .markdown",
+                     "Citations": "~3000-char pseudo-pages",
+                     "Notes": "Read as plain text, syntax left intact"},
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+
+
+# --- Tab: Run Pipeline (status only) ---------------------------------------
+with tab_run:
+    state = runner.status()
+
+    if state["running"]:
+        render_progress("run")
+    else:
+        render_last_outcome(state["progress"])
+
+        queued = runner.current_files()
+        params = state.get("params", {})
+
+        st.subheader("No run in progress")
+        st.info(
+            "Runs start from the **1 · Upload Files** tab - choose a run size, "
+            "then load your documents and the pipeline begins immediately."
+        )
+
+        if queued:
+            names = ", ".join(f"`{f['name']}`" for f in queued)
+            st.caption(f"Documents currently loaded ({len(queued)}): {names}")
+
+        if params:
+            st.divider()
+            st.markdown("#### Settings used by the last run")
+            p1, p2, p3 = st.columns(3)
+            p1.metric("Chunks", params.get("max_chunks", "-"))
+            p2.metric("Min quality", f"{params.get('min_score', '-')}/6")
+            p3.metric("Duplicate similarity", params.get("similarity", "-"))
+
+        if runner.log_tail(1):
+            with st.expander("Log from the last run"):
+                st.code("\n".join(runner.log_tail(40)), language="text")
+
+
+# --- Tab 1: Pipeline Overview ---------------------------------------------
+with tab1:
+    if not has_data:
+        no_data_yet("the overview")
+    else:
+        counts = stats.get("counts", {})
+        rates = stats.get("rates", {})
+        quality = stats.get("quality", {})
+
+        _n_abstain = counts.get("final_unanswerable", 0)
+        _answerable_rate = rates.get("answerable_pass_rate_pct")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric(
+            "Final pairs",
+            f"{counts.get('final_pairs', 0):,}",
+            help=f"Includes {_n_abstain} abstention example(s) - questions the "
+            f"source cannot answer, paired with a fixed refusal."
+            if _n_abstain
+            else None,
+        )
+        c2.metric(
+            "Avg quality",
+            f"{quality.get('avg_quality_score', 0)}/6",
+            help="Over the pairs the judge graded on the 0-6 rubric. Abstention "
+            "pairs are excluded - they are checked differently and carry no "
+            "score, so averaging them in would be meaningless.",
+        )
+        c3.metric(
+            "Pass rate",
+            f"{rates.get('pass_rate_pct', 0)}%",
+            help="Share of assessed pairs that were kept. Pairs the judge could "
+            "not grade are excluded rather than counted as failures."
+            + (
+                f" Over answerable pairs alone it is {_answerable_rate}%."
+                if _answerable_rate is not None
+                and _answerable_rate != rates.get("pass_rate_pct")
+                else ""
+            ),
+        )
+        c4.metric("Duplicates removed", f"{counts.get('duplicates_removed', 0):,}")
+
+        st.divider()
+        left, right = st.columns([1.15, 1])
+
+        with left:
+            st.markdown("#### Funnel — what survived each stage")
+            raw = counts.get("raw_pairs", 0)
+            validated = counts.get("validated_pairs", 0)
+            final = counts.get("final_pairs", 0)
+            fig = go.Figure(
+                go.Funnel(
+                    y=["Raw generated", "Passed judge", "After dedup"],
+                    x=[raw, validated, final],
+                    textinfo="value+percent initial",
+                    marker={"color": ["#C9CBD6", theme.BLUE, theme.MINT]},
+                    connector={"line": {"color": theme.LINE}},
+                )
+            )
+            fig = theme.plotly(fig, height=330)
+            st.plotly_chart(fig, width="stretch")
+            st.caption(
+                f"{counts.get('chunks_processed', 0)} chunks produced {raw} raw "
+                f"pairs ({rates.get('pairs_per_chunk', 0)}/chunk). The judge "
+                f"rejected {counts.get('rejected_pairs', 0)}; dedup removed "
+                f"{counts.get('duplicates_removed', 0)}. Overall yield "
+                f"{rates.get('overall_yield_pct', 0)}%."
+            )
+
+        with right:
+            st.markdown("#### Average sub-score")
+            subs = quality.get("avg_subscores", {})
+            if subs:
+                sub_df = pd.DataFrame(
+                    {"criterion": list(subs.keys()), "score": list(subs.values())}
+                )
+                fig = px.bar(
+                    sub_df,
+                    x="score",
+                    y="criterion",
+                    orientation="h",
+                    range_x=[0, 2],
+                    text="score",
+                    color="criterion",
+                    color_discrete_sequence=[theme.BLUE, "#7C8FF5", theme.MINT],
+                )
+                fig = theme.plotly(fig, height=330)
+                fig.update_layout(showlegend=False)
+                fig.update_traces(textposition="outside")
+                st.plotly_chart(fig, width="stretch")
+            st.caption("Each criterion is scored 0-2 by the judge. Max 2.0.")
+
+        st.divider()
+        left, right = st.columns(2)
+
+        with left:
+            st.markdown("#### Pairs per source document")
+            per_source = stats.get("per_source", {})
+            if per_source:
+                src_df = pd.DataFrame(
+                    {
+                        "source": list(per_source.keys()),
+                        "pairs": list(per_source.values()),
+                    }
+                ).sort_values("pairs", ascending=True)
+                fig = px.bar(
+                    src_df,
+                    x="pairs",
+                    y="source",
+                    orientation="h",
+                    text="pairs",
+                    color_discrete_sequence=[theme.BLUE],
+                )
+                fig = theme.plotly(fig, height=300)
+                st.plotly_chart(fig, width="stretch")
+
+        with right:
+            st.markdown("#### Question-type distribution")
+            qtypes = stats.get("question_types", {})
+            if qtypes:
+                fig = px.pie(
+                    names=list(qtypes.keys()),
+                    values=list(qtypes.values()),
+                    hole=0.45,
+                    color_discrete_sequence=[theme.BLUE, "#7C8FF5", theme.MINT],
+                )
+                fig = theme.plotly(fig, height=300)
+                st.plotly_chart(fig, width="stretch")
+
+        st.markdown("#### Question diversity")
+        div = stats.get("diversity", {})
+        st.caption(
+            f"{div.get('unique_openers', 0)} distinct two-word openers. The most "
+            f"common accounts for {div.get('most_common_pct', 0)}% of the set - a "
+            f"set dominated by one opener would signal low variety."
+        )
+        openers = div.get("top_openers", [])
+        if openers:
+            op_df = pd.DataFrame(openers).sort_values("count", ascending=True)
+            fig = px.bar(
+                op_df,
+                x="count",
+                y="opener",
+                orientation="h",
+                text="count",
+                color_discrete_sequence=[theme.MINT],
+            )
+            fig = theme.plotly(fig, height=380)
+            st.plotly_chart(fig, width="stretch")
+
+# --- Tab 2: Quality Explorer ----------------------------------------------
+with tab2:
+    if not has_data:
+        no_data_yet("the quality explorer")
+    else:
+        theme.section("Score Distribution", "Every pair the judge graded, including rejected ones - so the effect of the threshold is visible.")
+        all_graded = stats.get("quality", {}).get("score_distribution_all_graded", {})
+        dist_df = pd.DataFrame(
+            {
+                "score": [int(k) for k in all_graded.keys()],
+                "pairs": list(all_graded.values()),
+            }
+        ).sort_values("score")
+        if not dist_df.empty:
+            fig = px.bar(
+                dist_df,
+                x="score",
+                y="pairs",
+                text="pairs",
+                color="score",
+                color_continuous_scale=[[0, "#DCE3FD"], [1, theme.BLUE]],
+            )
+            fig = theme.plotly(fig, height=280)
+            fig.update_layout(
+                coloraxis_showscale=False,
+                xaxis=dict(dtick=1, title="quality score (0-6)"),
+            )
+            st.plotly_chart(fig, width="stretch")
+            st.caption(
+                "Every pair the judge graded, including rejected ones - so the "
+                "effect of the threshold is visible."
+            )
+
+        st.divider()
+        theme.section("Filter The Dataset", "Drag the minimum score up and watch weaker pairs disappear.")
+
+        fcol1, fcol2 = st.columns([1, 1.4])
+        with fcol1:
+            # .min() skips the unscored abstention rows; a dataset that
+            # somehow held nothing but those would make it NaN, and int(NaN)
+            # raises rather than rendering.
+            _scored_min = (
+                df["quality_score"].dropna().min() if "quality_score" in df else None
+            )
+            min_score_f = st.slider(
+                "Minimum quality score",
+                0,
+                6,
+                int(_scored_min) if pd.notna(_scored_min) else 0,
+                help="Drag this up to watch weaker pairs disappear. It applies "
+                "to pairs the judge scored 0-6; abstention pairs are controlled "
+                "by the Status filter instead.",
+            )
+        with fcol2:
+            search = st.text_input(
+                "Search questions and answers",
+                placeholder="e.g. CD4, cryptococcal, HPV",
+            )
+
+        tcol1, tcol2, tcol3 = st.columns(3)
+        with tcol1:
+            types = sorted(df["question_type"].dropna().unique().tolist())
+            picked_types = st.multiselect("Question type", types, default=types)
+        with tcol2:
+            sources = sorted(df["source"].dropna().unique().tolist())
+            picked_sources = st.multiselect("Source document", sources, default=sources)
+        with tcol3:
+            # Abstention pairs carry no quality score, so the slider above
+            # cannot speak for them. Without this control, dragging the slider
+            # off zero would silently delete every one of them and look like a
+            # quality judgement rather than a missing number.
+            STATUS_ANSWERABLE = "Answerable"
+            STATUS_ABSTENTION = "Unanswerable (abstention)"
+            status_options = [STATUS_ANSWERABLE]
+            if (~df["answerable"].fillna(True).astype(bool)).any():
+                status_options.append(STATUS_ABSTENTION)
+            picked_status = st.multiselect(
+                "Status",
+                status_options,
+                default=status_options,
+                help="Abstention pairs are questions the source cannot answer, "
+                "paired with a fixed refusal. They have no 0-6 score, so the "
+                "minimum-score slider does not apply to them.",
+            )
+
+        is_answerable = df["answerable"].fillna(True).astype(bool)
+
+        # The score filter applies only where there is a score to filter on.
+        keep_answerable = (
+            is_answerable & (df["quality_score"].fillna(0) >= min_score_f)
+            if STATUS_ANSWERABLE in picked_status
+            else pd.Series(False, index=df.index)
+        )
+        keep_abstention = (
+            ~is_answerable
+            if STATUS_ABSTENTION in picked_status
+            else pd.Series(False, index=df.index)
+        )
+        view = df[keep_answerable | keep_abstention]
+
+        if picked_types:
+            view = view[view["question_type"].isin(picked_types)]
+        if picked_sources:
+            view = view[view["source"].isin(picked_sources)]
+        if search:
+            needle = search.lower()
+            view = view[
+                view["question"].str.lower().str.contains(needle, na=False)
+                | view["answer"].str.lower().str.contains(needle, na=False)
+            ]
+
+        pct = len(view) / max(len(df), 1) * 100
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Pairs shown", f"{len(view):,}", f"{len(view) - len(df):+,} vs all")
+        m2.metric("Share of dataset", f"{pct:.1f}%")
+        _shown_scored = view["quality_score"].dropna()
+        m3.metric(
+            "Avg score shown",
+            f"{_shown_scored.mean():.2f}/6" if len(_shown_scored) else "-",
+            help="Over the pairs that have a score. Abstention pairs are "
+            "excluded because they were never graded 0-6.",
+        )
+
+        # Looked up by question because the dataset itself does not carry the
+        # passage - export.py strips chunk_text. graded_pairs.jsonl keeps it.
+        show_passages = st.toggle(
+            "Show the source passage with each pair",
+            value=False,
+            help="The passage the pair was generated from, so you can check "
+            "the answer against it yourself.",
+        )
+        passage_of: dict[str, str] = {}
+        if show_passages:
+            for _g in load_jsonl(str(GRADED_FILE), _mtime(GRADED_FILE)):
+                if _g.get("chunk_text"):
+                    passage_of.setdefault(_g.get("question", ""), _g["chunk_text"])
+            if not passage_of:
+                st.caption(
+                    "No passages available - `graded_pairs.jsonl` is missing "
+                    "from this run."
+                )
+
+        st.divider()
+        if view.empty:
+            st.info("No pairs match these filters. Lower the score or clear the search.")
+        else:
+            page_size = 25
+            total_pages = (len(view) - 1) // page_size + 1
+            page = (
+                st.number_input(
+                    f"Page (of {total_pages})", 1, total_pages, 1, key="qpage"
+                )
+                if total_pages > 1
+                else 1
+            )
+            chunk = view.iloc[(page - 1) * page_size : page * page_size]
+
+            for _, row in chunk.iterrows():
+                _score = row.get("quality_score")
+                _tag = "[abstention]" if pd.isna(_score) else f"[{int(_score)}/6]"
+                with st.expander(f"{_tag}  {row['question']}"):
+                    st.markdown(f"**Answer:** {row['answer']}")
+                    if pd.isna(_score):
+                        st.caption(
+                            "No score: this is an abstention example. The source "
+                            "cannot answer the question, and the fixed refusal "
+                            "above is the correct answer."
+                        )
+                    meta1, meta2, meta3 = st.columns(3)
+                    meta1.caption(f"Source: `{row.get('source')}`")
+                    meta2.caption(f"Page: {row.get('page')}")
+                    meta3.caption(f"Type: `{row.get('question_type')}`")
+                    if show_passages:
+                        _passage = passage_of.get(row["question"])
+                        if _passage:
+                            st.caption("Source passage")
+                            st.markdown(
+                                f'<div class="ast-passage">{_passage}</div>',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.caption("Source passage not recorded for this pair.")
+
+# --- Tab 3: Before vs After -----------------------------------------------
+with tab3:
+    if not has_data:
+        no_data_yet("the before/after comparison")
+    else:
+        theme.section(
+            "Kept vs Rejected",
+            "The rejected pairs are kept deliberately - they are the evidence "
+            "that the quality filter does something.",
+        )
+
+        # A pair the judge never scored was not "rejected on quality" - it was
+        # never assessed. Mixing the two would overstate what the filter caught.
+        quality_rejected = [r for r in rejected if r.get("scores")]
+        not_assessed = [r for r in rejected if not r.get("scores")]
+
+        left, right = st.columns(2)
+
+        with left:
+            st.markdown(f"#### Rejected on quality ({len(quality_rejected):,})")
+            if not_assessed:
+                st.caption(
+                    f"A further {len(not_assessed):,} pairs were never graded "
+                    f"(API quota exhausted), so they are not shown here - they "
+                    f"are not evidence of the quality filter."
+                )
+            if not quality_rejected:
+                st.info(
+                    "No pair was rejected on quality in this run. With the "
+                    "boilerplate filter removing weak passages upfront, the "
+                    "generator produces few failures."
+                )
+            else:
+                worst = sorted(quality_rejected, key=lambda r: r.get("quality_score", 0))
+                st.caption(
+                    f"The {min(20, len(worst))} lowest-scoring, worst first."
+                    + (f" All {len(worst):,} are listed below the columns."
+                       if len(worst) > 20 else "")
+                )
+                for r in worst[:20]:
+                    score = r.get("quality_score")
+                    label = f"{score}/6" if score is not None else "not assessed"
+                    with st.expander(f"[{label}]  {r.get('question', '')[:80]}"):
+                        st.markdown(f"**Answer:** {r.get('answer', '')}")
+                        st.error(
+                            f"**Why rejected:** {r.get('reject_reason', 'unknown')}"
+                        )
+                        sub = r.get("scores")
+                        if sub:
+                            s1, s2, s3 = st.columns(3)
+                            s1.metric("Grounded", f"{sub.get('groundedness')}/2")
+                            s2.metric("Specific", f"{sub.get('specificity')}/2")
+                            s3.metric("Complete", f"{sub.get('completeness')}/2")
+                        st.caption(f"{r.get('source')} p.{r.get('page')}")
+
+        with right:
+            st.markdown(f"#### Kept ({len(dataset):,})")
+            best = df.sort_values("quality_score", ascending=False).head(20)
+            st.caption(
+                f"The {len(best)} highest-scoring of the {len(dataset):,} that "
+                f"survived both the judge and deduplication."
+            )
+            for _, row in best.iterrows():
+                _sc = row.get("quality_score")
+                _lbl = "[abstention]" if pd.isna(_sc) else f"[{int(_sc)}/6]"
+                with st.expander(f"{_lbl}  {row['question'][:80]}"):
+                    st.markdown(f"**Answer:** {row['answer']}")
+                    if pd.isna(_sc):
+                        st.success(
+                            "An abstention example: verified unanswerable from "
+                            "its passage, and survived deduplication."
+                        )
+                    else:
+                        st.success("Passed the judge and survived deduplication.")
+                    st.caption(
+                        f"{row.get('source')} p.{row.get('page')} - "
+                        f"type `{row.get('question_type')}`"
+                    )
+
+        if quality_rejected:
+            st.divider()
+            st.markdown("#### Which criterion fails most often")
+            st.caption(
+                "Counted over the rejected pairs. This says what the generator "
+                "is actually bad at, which the reject reasons alone do not - a "
+                "pair can fail the total while being fine on two of three."
+            )
+            crit_rows = []
+            for crit, nice in (
+                ("groundedness", "Groundedness"),
+                ("specificity", "Specificity"),
+                ("completeness", "Completeness"),
+            ):
+                values = [
+                    r["scores"].get(crit)
+                    for r in quality_rejected
+                    if isinstance(r.get("scores"), dict)
+                ]
+                crit_rows.append(
+                    {"Criterion": nice, "Score": "0 - fails",
+                     "Pairs": sum(1 for v in values if v == 0)}
+                )
+                crit_rows.append(
+                    {"Criterion": nice, "Score": "1 - partial",
+                     "Pairs": sum(1 for v in values if v == 1)}
+                )
+            cdf = pd.DataFrame(crit_rows)
+            if cdf["Pairs"].sum():
+                fig = px.bar(
+                    cdf, x="Pairs", y="Criterion", color="Score",
+                    orientation="h", text="Pairs", barmode="group",
+                    color_discrete_map={"0 - fails": "#E8927C",
+                                        "1 - partial": "#F0C98A"},
+                )
+                fig = theme.plotly(fig, height=280)
+                fig.update_layout(legend_title_text="")
+                st.plotly_chart(fig, width="stretch")
+
+            st.divider()
+            st.markdown("#### Most common rejection reasons")
+            reasons = stats.get("top_reject_reasons", [])
+            if reasons:
+                rdf = (
+                    pd.DataFrame(reasons).sort_values("count", ascending=True).tail(10)
+                )
+                fig = px.bar(
+                    rdf,
+                    x="count",
+                    y="reason",
+                    orientation="h",
+                    text="count",
+                    color_discrete_sequence=["#E8927C"],
+                )
+                fig = theme.plotly(fig, height=340)
+                st.plotly_chart(fig, width="stretch")
+
+        st.divider()
+        st.markdown(f"#### Semantic duplicates removed ({len(duplicates):,})")
+        st.caption(
+            "String matching would miss these - the wording differs, the meaning "
+            "does not. This is why deduplication uses embeddings. Each pair below "
+            "shows both numbers so you can see the gap."
+        )
+
+        if not duplicates:
+            st.info(
+                "No duplicates were found in this run. With a larger chunk count "
+                "the overlap between neighbouring passages produces more of them."
+            )
+        else:
+            ranked = sorted(
+                duplicates, key=lambda d: d.get("similarity", 0), reverse=True
+            )
+            for d in ranked[:25]:
+                sim = d.get("similarity", 0)
+                with st.expander(
+                    f"similarity {sim:.3f}  -  {d.get('removed_question', '')[:75]}"
+                ):
+                    dl, dr = st.columns(2)
+                    with dl:
+                        st.markdown("**Removed**")
+                        st.warning(d.get("removed_question", ""))
+                        st.caption(d.get("removed_answer", "")[:300])
+                    with dr:
+                        st.markdown("**Kept (the original)**")
+                        st.success(d.get("duplicate_of_question", ""))
+                        st.caption(d.get("duplicate_of_answer", "")[:300])
+                    st.progress(
+                        min(float(sim), 1.0), text=f"cosine similarity {sim:.3f}"
+                    )
+                    lex = d.get("lexical_overlap")
+                    if lex is not None:
+                        st.progress(
+                            min(float(lex), 1.0),
+                            text=f"lexical overlap of the questions {lex:.0%}",
+                        )
+                        if lex < 0.6:
+                            st.caption(
+                                f"The two questions share only {lex:.0%} of their "
+                                f"wording but {sim:.0%} of their meaning. String "
+                                f"matching would have kept both."
+                            )
+
+        # ---------- the complete lists, for anyone who wants all of them -----
+        st.divider()
+        st.markdown("#### See everything")
+        st.caption(
+            "The columns above show the extremes. These tables hold every row, "
+            "sortable and searchable."
+        )
+
+        if quality_rejected:
+            with st.expander(f"Show all {len(quality_rejected):,} rejected pairs"):
+                rej_df = pd.DataFrame(
+                    [
+                        {
+                            "Score": r.get("quality_score"),
+                            "Grounded": (r.get("scores") or {}).get("groundedness"),
+                            "Specific": (r.get("scores") or {}).get("specificity"),
+                            "Complete": (r.get("scores") or {}).get("completeness"),
+                            "Question": r.get("question", ""),
+                            "Why rejected": r.get("reject_reason", ""),
+                            "Source": r.get("source", ""),
+                            "Page": r.get("page"),
+                        }
+                        for r in sorted(
+                            quality_rejected, key=lambda r: r.get("quality_score", 0)
+                        )
+                    ]
+                )
+                st.dataframe(rej_df, hide_index=True, width="stretch", height=420)
+
+        if not_assessed:
+            with st.expander(f"Show {len(not_assessed):,} pairs the judge never graded"):
+                st.caption(
+                    "Not quality rejections. The judge could not score these - "
+                    "usually an unparseable response or an exhausted token "
+                    "budget. They are excluded from the pass rate."
+                )
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Question": r.get("question", ""),
+                                "Answer": r.get("answer", ""),
+                                "Reason": r.get("reject_reason", ""),
+                                "Source": r.get("source", ""),
+                            }
+                            for r in not_assessed
+                        ]
+                    ),
+                    hide_index=True, width="stretch", height=300,
+                )
+
+        with st.expander(f"Show all {len(dataset):,} kept pairs"):
+            st.dataframe(
+                df[[c for c in ("quality_score", "question", "answer",
+                                "question_type", "answerable", "source", "page")
+                    if c in df.columns]],
+                hide_index=True, width="stretch", height=420,
+            )
+
+        # ---------- abstention examples ---------------------------------------
+        _ab_stats = stats.get("abstention") or {}
+        if abstentions or _ab_stats.get("generated"):
+            st.divider()
+            st.markdown("#### Unanswerable questions: teaching the model to abstain")
+            st.caption(
+                "A dataset of nothing but answerable questions teaches a model "
+                "that every question has an answer in the document, so when it "
+                "does not know it invents one. These pairs are the opposite "
+                "lesson: a plausible, on-topic question the passage genuinely "
+                "cannot answer, with a fixed refusal as the answer."
+            )
+
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("Written", _ab_stats.get("generated", len(abstentions)))
+            a2.metric(
+                "Verified unanswerable",
+                _ab_stats.get("verified", sum(1 for a in abstentions
+                                              if (a.get("check") or {}).get("unanswerable"))),
+            )
+            a3.metric("Failed the check", _ab_stats.get("failed_check", 0))
+            a4.metric("In the dataset", _ab_stats.get("in_dataset", 0))
+
+            if _ab_stats.get("answer"):
+                st.caption("Every one of them answers with exactly this string:")
+                st.code(_ab_stats["answer"], language=None)
+                st.caption(
+                    "Fixed in code rather than generated, so the model learns one "
+                    "refusal phrase instead of fifty paraphrases of it."
+                )
+
+            if abstentions:
+                st.markdown("**Each one, with the judge's verdict**")
+                for a in abstentions:
+                    chk = a.get("check") or {}
+                    ok = bool(a.get("in_dataset"))
+                    icon = "kept" if ok else "dropped"
+                    with st.expander(f"[{icon}]  {a.get('question', '')[:78]}"):
+                        st.markdown(f"**Answer given:** {a.get('answer', '')}")
+                        v1, v2, v3 = st.columns(3)
+                        v1.metric("Unanswerable", _verdict(chk.get("unanswerable")))
+                        v2.metric("Plausible", _verdict(chk.get("plausible")))
+                        v3.metric("Fixed answer", _verdict(chk.get("abstention_answer")))
+                        if ok:
+                            st.success(
+                                "The judge confirmed the passage cannot answer "
+                                "this, and that it is a question worth asking."
+                            )
+                        else:
+                            st.error(
+                                f"**Dropped:** {a.get('reject_reason') or 'did not pass the check'}"
+                            )
+                        st.caption(f"{a.get('source')} p.{a.get('page')}")
+            else:
+                st.info(
+                    "This run produced no abstention examples. They are written "
+                    "for a share of chunks set by `UNANSWERABLE_RATIO` in "
+                    "`src/config.py`, so a very small run may get none."
+                )
+
+        st.divider()
+        st.markdown("#### Download")
+        dcol1, dcol2 = st.columns(2)
+        if Path(DATASET_FILE).exists():
+            dcol1.download_button(
+                "Download synthetic_dataset.jsonl",
+                data=Path(DATASET_FILE).read_bytes(),
+                file_name="synthetic_dataset.jsonl",
+                mime="application/jsonl",
+                width="stretch",
+            )
+        if Path(STATS_FILE).exists():
+            dcol2.download_button(
+                "Download pipeline_stats.json",
+                data=Path(STATS_FILE).read_bytes(),
+                file_name="pipeline_stats.json",
+                mime="application/json",
+                width="stretch",
+            )
+        st.caption(DISCLAIMER)
+
+# --- Tab 4: Hallucination Check -------------------------------------------
+with tab4:
+    grounding = stats.get("grounding", {})
+
+    if not grounding.get("analysed"):
+        st.info(
+            "No grounding analysis for this run yet.\n\n"
+            "It is produced automatically during export. For a dataset built "
+            "before this check existed, generate it with:\n\n"
+            "```\npython src/grounding.py\n```"
+        )
+    else:
+        theme.section("Grounding Check", "The judge is itself a language model. This checks the same thing mechanically, with no model involved.")
+        st.caption(
+            "The judge in step 3 scores groundedness, but the judge is itself a "
+            "language model. This tab checks the same thing **mechanically** - no "
+            "model involved - by comparing every answer against the passage it "
+            "came from. Two independent signals, both reproducible."
+        )
+
+        bands = grounding.get("bands", {})
+        band_pct = grounding.get("band_pct", {})
+        total = grounding["analysed"]
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(
+            "Strongly grounded",
+            f"{band_pct.get('strong', 0)}%",
+            f"{bands.get('strong', 0)} of {total} pairs",
+        )
+        m2.metric("Average word overlap", f"{grounding['avg_lexical_overlap']:.0%}")
+        m3.metric(
+            "Unsupported numbers",
+            grounding.get("unsupported_number_pairs", 0),
+            f"{grounding.get('unsupported_number_pct', 0)}% of pairs",
+            delta_color="inverse",
+        )
+        m4.metric(
+            "Weakly grounded", f"{band_pct.get('weak', 0)}%", delta_color="inverse"
+        )
+
+        st.divider()
+        left, right = st.columns([1, 1.3])
+
+        with left:
+            st.markdown("#### Grounding strength")
+            band_df = pd.DataFrame(
+                {
+                    "band": ["strong (>=70%)", "moderate (50-70%)", "weak (<50%)"],
+                    "pairs": [
+                        bands.get("strong", 0),
+                        bands.get("moderate", 0),
+                        bands.get("weak", 0),
+                    ],
+                }
+            )
+            fig = px.pie(
+                band_df,
+                names="band",
+                values="pairs",
+                hole=0.45,
+                color="band",
+                color_discrete_map={
+                    "strong (>=70%)": theme.MINT,
+                    "moderate (50-70%)": "#7C8FF5",
+                    "weak (<50%)": "#E8927C",
+                },
+            )
+            fig = theme.plotly(fig, height=320)
+            st.plotly_chart(fig, width="stretch")
+
+        with right:
+            st.markdown("#### How much of each answer appears in its source")
+            hist = grounding.get("overlap_histogram", [])
+            if hist:
+                h_df = pd.DataFrame(hist)
+                fig = px.bar(
+                    h_df,
+                    x="bin",
+                    y="count",
+                    text="count",
+                    color="count",
+                    color_continuous_scale=[[0, "#E8927C"], [0.5, "#7C8FF5"], [1, theme.MINT]],
+                )
+                fig = theme.plotly(fig, height=320)
+                fig.update_layout(
+                    coloraxis_showscale=False,
+                    xaxis_title="share of answer words found in the source passage",
+                    yaxis_title="pairs",
+                )
+                st.plotly_chart(fig, width="stretch")
+
+        st.info(
+            "**Reading this honestly:** a low overlap does not automatically mean "
+            "a hallucination - it often means the model paraphrased. Definitional "
+            "questions score lowest for exactly that reason. The *unsupported "
+            "numbers* signal below is the sharper one: prose can legitimately be "
+            "reworded, but a dose or a threshold cannot."
+        )
+
+        st.divider()
+        left, right = st.columns(2)
+
+        with left:
+            st.markdown("#### Grounding by question type")
+            by_type = grounding.get("by_question_type", {})
+            if by_type:
+                t_df = pd.DataFrame(
+                    {"type": list(by_type.keys()), "overlap": list(by_type.values())}
+                ).sort_values("overlap")
+                fig = px.bar(
+                    t_df, x="overlap", y="type", orientation="h", text="overlap",
+                    range_x=[0, 1], color="overlap", color_continuous_scale=[[0, "#E8927C"], [0.5, "#7C8FF5"], [1, theme.MINT]],
+                )
+                fig = theme.plotly(fig, height=280)
+                fig.update_layout(coloraxis_showscale=False)
+                st.plotly_chart(fig, width="stretch")
+                worst = min(by_type, key=by_type.get)
+                st.caption(
+                    f"`{worst}` questions ground weakest ({by_type[worst]:.0%}) - "
+                    f"they ask what a term means, which forces the model to "
+                    f"explain in its own words."
+                )
+
+        with right:
+            st.markdown("#### Grounding by source document")
+            by_src = grounding.get("by_source", {})
+            if by_src:
+                s_df = pd.DataFrame(
+                    {"source": list(by_src.keys()), "overlap": list(by_src.values())}
+                ).sort_values("overlap")
+                fig = px.bar(
+                    s_df, x="overlap", y="source", orientation="h", text="overlap",
+                    range_x=[0, 1], color="overlap", color_continuous_scale=[[0, "#E8927C"], [0.5, "#7C8FF5"], [1, theme.MINT]],
+                )
+                fig = theme.plotly(fig, height=280)
+                fig.update_layout(coloraxis_showscale=False)
+                st.plotly_chart(fig, width="stretch")
+
+        # ---- judge vs mechanical check ----
+        judged = [
+            r
+            for r in grounding_rows
+            if r.get("judge_groundedness") is not None and r.get("passage_found")
+        ]
+        st.divider()
+        st.markdown("#### Does the LLM judge agree with the mechanical check?")
+
+        if not judged:
+            st.caption(
+                "This comparison needs the judge's per-pair sub-scores, which this "
+                "run did not store alongside the kept pairs. The next complete run "
+                "will populate it."
+            )
+        else:
+            jc = grounding.get("judge_comparison", {})
+            a1, a2, a3 = st.columns(3)
+            a1.metric("Agreement", f"{jc.get('agreement_pct', 0)}%")
+            a2.metric(
+                "Judge says clean, overlap low",
+                jc.get("judge_clean_but_low_overlap", 0),
+                delta_color="inverse",
+            )
+            a3.metric(
+                "Judge flagged, overlap high",
+                jc.get("judge_flagged_but_high_overlap", 0),
+                delta_color="inverse",
+            )
+
+            sc = pd.DataFrame(
+                {
+                    "lexical_overlap": [r["lexical_overlap"] for r in judged],
+                    "judge_groundedness": [r["judge_groundedness"] for r in judged],
+                    "question": [r["question"][:70] for r in judged],
+                    "type": [r.get("question_type", "?") for r in judged],
+                }
+            )
+            fig = px.strip(
+                sc,
+                x="lexical_overlap",
+                y="judge_groundedness",
+                color="type",
+                hover_data=["question"],
+                stripmode="overlay",
+            )
+            fig = theme.plotly(fig, height=340)
+            fig.update_layout(
+                xaxis_title="mechanical word overlap",
+                yaxis_title="judge groundedness (0-2)",
+                yaxis=dict(dtick=1),
+            )
+            fig.add_vline(x=0.7, line_dash="dash", line_color=theme.MUTED)
+            st.plotly_chart(fig, width="stretch")
+            st.caption(
+                "Each point is one pair. Points bottom-right (judge unhappy, words "
+                "match) and top-left (judge happy, words do not match) are the "
+                "disagreements worth reading by hand."
+            )
+
+        # ---- flagged pairs ----
+        flagged = [r for r in grounding_rows if r.get("has_unsupported_number")]
+        st.divider()
+        st.markdown(
+            f"#### Answers containing numbers not found in the source ({len(flagged)})"
+        )
+        st.caption(
+            "The strongest hallucination signal in this dataset. A fabricated dose, "
+            "threshold or count is a number the source never contained."
+        )
+
+        if not flagged:
+            st.success("No answer introduced a number that its source page lacked.")
+        else:
+            for r in flagged:
+                nums = ", ".join(f"`{n}`" for n in r["unsupported_numbers"])
+                with st.expander(f"{nums}  -  {r['question'][:80]}"):
+                    st.markdown(f"**Question:** {r['question']}")
+                    st.markdown(f"**Answer:** {r['answer']}")
+                    st.error(f"**Numbers absent from the source page:** {nums}")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Word overlap", f"{r['lexical_overlap']:.0%}")
+                    c2.metric("Numbers in answer", len(r.get("numbers_in_answer", [])))
+                    c3.metric("Quality score", f"{r.get('quality_score')}/6")
+                    st.caption(
+                        f"{r.get('source')} p.{r.get('page')} - verify this one "
+                        f"against the original document."
+                    )
+
+        # ---- weakest overlap ----
+        weak = sorted(
+            [r for r in grounding_rows if r.get("passage_found")],
+            key=lambda r: r["lexical_overlap"],
+        )[:15]
+        if weak:
+            st.divider()
+            st.markdown("#### Lowest word overlap — review these by hand")
+            st.caption(
+                "Ordered by how little of the answer appears in the source. Some are "
+                "legitimate paraphrase; some are not. This list is where a human "
+                "reviewer should start."
+            )
+            for r in weak:
+                with st.expander(
+                    f"{r['lexical_overlap']:.0%} overlap  -  {r['question'][:75]}"
+                ):
+                    st.markdown(f"**Answer:** {r['answer']}")
+                    novel = r.get("novel_words", [])
+                    if novel:
+                        st.warning(
+                            "Words in the answer but not in the source: "
+                            + ", ".join(f"`{w}`" for w in novel[:12])
+                        )
+                    st.progress(
+                        min(float(r["lexical_overlap"]), 1.0),
+                        text=f"word overlap {r['lexical_overlap']:.0%}",
+                    )
+                    st.caption(f"{r.get('source')} p.{r.get('page')}")
+
+
+
+# --- Blind labelling: score pairs by hand, then compare with the judge ------
+# The scores are entered WITHOUT the judge's grade on screen. That is the whole
+# point: if you can see that the judge said 6/6, you are no longer an
+# independent rater and the kappa measures nothing.
+LABEL_CAPTIONS = {
+    "groundedness": [
+        "contradicts the passage, or invents information",
+        "mostly supported, adds a small unstated detail",
+        "every claim is in the passage",
+    ],
+    "specificity": [
+        "vague, or refers to the passage",
+        "general but still answerable on its own",
+        "precise question about a named topic or threshold",
+    ],
+    "completeness": [
+        "does not answer, or is truncated",
+        "partial, or needs the question for context",
+        "fully answers the question, stands alone",
+    ],
+}
+
+
+def render_blind_labelling() -> None:
+    """One pair at a time: passage, question, answer, three 0-2 scores."""
+    import judge_reliability as jr
+
+    try:
+        sample = jr.load_sample()
+    except SystemExit as exc:
+        st.warning(str(exc))
+        return
+    if not sample:
+        st.info("No graded pairs to sample. Run the pipeline first.")
+        return
+
+    human = jr.load_human()
+    labelled = [p for p in sample if p["question"] in human]
+
+    st.caption(
+        f"A fixed sample of {len(sample)} graded pairs (target "
+        f"{jr.SAMPLE_SIZE}), drawn with seed {jr.SEED} so it is the same every "
+        f"time you come back. Your scores are saved after every pair."
+    )
+    st.progress(
+        len(labelled) / max(len(sample), 1),
+        text=f"{len(labelled)} of {len(sample)} labelled",
+    )
+
+    with st.expander("The rubric you are scoring against"):
+        st.code(jr.RUBRIC, language=None)
+
+    first_open = next(
+        (i for i, p in enumerate(sample) if p["question"] not in human), 0
+    )
+    if "jr_idx" not in st.session_state:
+        st.session_state.jr_idx = first_open
+
+    options = [
+        f"{i + 1}. {'done' if p['question'] in human else 'open'} - {p['question'][:66]}"
+        for i, p in enumerate(sample)
+    ]
+    idx = min(st.session_state.jr_idx, len(sample) - 1)
+    picked = st.selectbox("Jump to a pair", options, index=idx, key="jr_jump")
+    idx = options.index(picked)
+    st.session_state.jr_idx = idx
+    item = sample[idx]
+
+    already = item["question"] in human
+    st.markdown(
+        f"**Pair {idx + 1} of {len(sample)}** - "
+        + ("already scored, you can change it" if already else "not scored yet")
+    )
+    st.caption(f"{item.get('source')} - page {item.get('page')}")
+    st.markdown(
+        f'<div class="ast-passage">{item.get("chunk_text", "")[:1400]}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(f"**Q:** {item['question']}")
+    st.markdown(f"**A:** {item['answer']}")
+
+    existing = human.get(item["question"], {})
+    with st.form(key=f"jr_form_{idx}"):
+        chosen: dict[str, int | None] = {}
+        cols = st.columns(3)
+        for col, crit in zip(cols, jr.CRITERIA):
+            with col:
+                current = existing.get(crit)
+                chosen[crit] = st.radio(
+                    crit.title(),
+                    [0, 1, 2],
+                    index=current if current in (0, 1, 2) else None,
+                    captions=LABEL_CAPTIONS[crit],
+                    key=f"jr_{crit}_{idx}",
+                )
+        saved = st.form_submit_button("Save and go to next", type="primary")
+
+    if saved:
+        if any(v is None for v in chosen.values()):
+            st.warning("Choose a score for all three criteria before saving.")
+        else:
+            human[item["question"]] = chosen
+            jr.save_human(human)
+            nxt = next(
+                (i for i in range(idx + 1, len(sample))
+                 if sample[i]["question"] not in human),
+                next((i for i, p in enumerate(sample)
+                      if p["question"] not in human), None),
+            )
+            st.session_state.jr_idx = idx if nxt is None else nxt
+            st.session_state.jr_flash = (
+                f"Saved {sum(chosen.values())}/6."
+                + (" Every pair is now scored - compute the agreement below."
+                   if nxt is None else f" Showing pair {nxt + 1}.")
+            )
+            st.cache_data.clear()
+            st.rerun()
+
+    st.divider()
+    enough = len(labelled) >= 10
+    bcol1, bcol2 = st.columns([1, 1])
+    with bcol1:
+        if st.button(
+            "Compute agreement (Cohen's kappa)",
+            type="primary",
+            disabled=not enough,
+            width="stretch",
+            help=None if enough else "Score at least 10 pairs first - kappa on "
+            "fewer than that is noise.",
+        ):
+            import contextlib
+
+            buffer = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buffer):
+                    jr.report()
+                st.session_state.jr_report = buffer.getvalue()
+            except Exception as exc:
+                st.session_state.jr_report = f"Could not compute: {exc}"
+            st.cache_data.clear()
+            st.rerun()
+    with bcol2:
+        if not enough:
+            st.caption(
+                f"{10 - len(labelled)} more pair(s) needed before kappa means "
+                f"anything."
+            )
+
+    with st.expander("Start again: clear my labels"):
+        st.caption(
+            f"Removes all {len(labelled)} of your scores. The same {len(sample)} "
+            f"pairs stay in the sample."
+        )
+        if st.checkbox("Yes, delete my labels", key="jr_confirm_clear"):
+            if st.button("Clear my labels", key="jr_clear"):
+                jr.save_human({})
+                st.session_state.jr_idx = 0
+                st.session_state.jr_flash = "Your labels were cleared."
+                st.cache_data.clear()
+                st.rerun()
+
+
+# --- Tab: Judge Reliability ------------------------------------------------
+with tab_judge:
+    if not has_data:
+        no_data_yet("judge reliability")
+    else:
+        theme.section(
+            "Judge Reliability",
+            "How much should you trust the scores? Three checks, reported "
+            "whatever they say.",
+        )
+
+        _graded = load_jsonl(str(GRADED_FILE), _mtime(GRADED_FILE))
+        _scored = [g for g in _graded if g.get("scores")]
+        _q = stats.get("quality", {})
+        _r = stats.get("rates", {})
+        _g = stats.get("grounding", {})
+
+        # ---------- 1. does the judge discriminate at all? ----------
+        st.markdown("#### 1. Does the judge discriminate?")
+        dist = _q.get("score_distribution_all_graded", {})
+        total_graded = sum(dist.values()) or 1
+        top = dist.get("6", 0)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Pairs graded", f"{total_graded:,}")
+        k2.metric("Scored a full 6/6", f"{top / total_graded * 100:.0f}%")
+        k3.metric("Distinct scores used", len(dist))
+        k4.metric("Judge failures", _r.get("judge_failures", 0))
+
+        if top / total_graded > 0.75:
+            st.warning(
+                f"**{top / total_graded * 100:.0f}% of pairs scored full marks.** "
+                f"A judge that rarely marks anything down is not doing much "
+                f"filtering on this corpus - the honest reading is that the "
+                f"threshold is easy here, not that the data is flawless. Raise "
+                f"the minimum score on the Upload tab to see the filter bite."
+            )
+        else:
+            st.success(
+                "The judge is using a spread of scores, so the threshold is "
+                "doing real work."
+            )
+
+        if dist:
+            d_df = pd.DataFrame(
+                {"score": [int(k) for k in dist], "pairs": list(dist.values())}
+            ).sort_values("score")
+            fig = px.bar(
+                d_df, x="score", y="pairs", text="pairs", color="score",
+                color_continuous_scale=[[0, "#DCE3FD"], [1, theme.BLUE]],
+            )
+            fig = theme.plotly(fig, height=250)
+            fig.update_layout(
+                coloraxis_showscale=False,
+                xaxis=dict(dtick=1, title="judge score (0-6)"),
+            )
+            st.plotly_chart(fig, width="stretch")
+
+        st.divider()
+
+        # ---------- 2. agreement with the mechanical check ----------
+        st.markdown("#### 2. Agreement with the non-LLM check")
+        st.caption(
+            "The judge is a language model. The grounding check is arithmetic. "
+            "Where they disagree is where a human should look."
+        )
+
+        jc = _g.get("judge_comparison") or {}
+        if jc:
+            a1, a2, a3 = st.columns(3)
+            a1.metric("Agreement", f"{jc.get('agreement_pct', 0)}%")
+            a2.metric(
+                "Judge clean, overlap low", jc.get("judge_clean_but_low_overlap", 0)
+            )
+            a3.metric(
+                "Judge marked down, overlap high",
+                jc.get("judge_flagged_but_high_overlap", 0),
+            )
+            st.caption(
+                f"Computed over {jc.get('pairs', 0)} pairs. The full scatter is "
+                f"on the **Grounding** tab."
+            )
+        else:
+            st.info(
+                "This comparison needs the judge's per-pair sub-scores recorded "
+                "alongside the grounding analysis. A complete run populates it."
+            )
+
+        st.divider()
+
+        # ---------- 3. human agreement, Cohen's kappa ----------
+        st.markdown("#### 3. Agreement with a human (Cohen's kappa)")
+
+        human_file = OUTPUT_DIR / "human_scores.json"
+        kappa_file = OUTPUT_DIR / "experiment_judge_reliability.json"
+        human = load_stats(str(human_file), _mtime(human_file))
+        kappa = load_stats(str(kappa_file), _mtime(kappa_file))
+
+        if kappa and kappa.get("criteria"):
+            st.metric("Pairs scored by hand", kappa.get("n", 0))
+            rows = []
+            for crit, vals in kappa["criteria"].items():
+                rows.append(
+                    {
+                        "Criterion": crit,
+                        "Kappa": vals.get("kappa"),
+                        "Weighted": vals.get("weighted_kappa"),
+                        "Exact agreement": vals.get("exact_agreement"),
+                        "Strength": vals.get("strength", vals.get("note", "-")),
+                    }
+                )
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+            kr = kappa.get("keep_reject") or {}
+            if kr:
+                st.markdown("**Keep / reject decision** — the one that matters")
+                c1, c2 = st.columns(2)
+                c1.metric("Kappa", kr.get("kappa", "n/a"))
+                c2.metric("Agreement", f"{(kr.get('agreement') or 0) * 100:.0f}%")
+
+            worst = min(
+                (v.get("kappa") for v in kappa["criteria"].values() if v.get("kappa") is not None),
+                default=None,
+            )
+            if worst is not None and worst < 0.4:
+                st.warning(
+                    f"Weakest agreement is kappa {worst:.2f} — fair or worse. "
+                    f"Say so in the report and downweight the judge's numbers. "
+                    f"An honest limitation is worth more than a flattering metric."
+                )
+        else:
+            st.info(
+                f"**Not measured yet.** {len(human)} pair(s) scored by hand so "
+                f"far. Until this is done, treat the judge's quality scores as "
+                f"unverified - a judge nobody has checked is an assumption, not "
+                f"a measurement."
+            )
+
+        if st.session_state.get("jr_flash"):
+            st.success(st.session_state.pop("jr_flash"))
+
+        st.markdown("##### Score a sample by hand")
+        st.caption(
+            "You score each pair on the same 0-2 rubric the judge used, without "
+            "seeing its grade. Cohen's kappa then measures how far the two agree "
+            "beyond what chance would give."
+        )
+        if kappa and kappa.get("criteria"):
+            with st.expander("Open the labelling tool (results above are already computed)"):
+                render_blind_labelling()
+        else:
+            render_blind_labelling()
+
+        if st.session_state.get("jr_report"):
+            with st.expander("Full agreement report", expanded=True):
+                st.code(st.session_state["jr_report"], language=None)
+
+        st.caption(
+            "Prefer the terminal? `python experiments/judge_reliability.py` does "
+            "the same thing, and `--report` prints the agreement. Both write to "
+            "the same files, so you can switch between them."
+        )
+
+        with st.expander("How to read a kappa (Landis & Koch)"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"Kappa": "< 0.00", "Strength": "none"},
+                        {"Kappa": "0.00 - 0.20", "Strength": "slight"},
+                        {"Kappa": "0.21 - 0.40", "Strength": "fair"},
+                        {"Kappa": "0.41 - 0.60", "Strength": "moderate"},
+                        {"Kappa": "0.61 - 0.80", "Strength": "substantial"},
+                        {"Kappa": "0.81 - 1.00", "Strength": "almost perfect"},
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+
+
+# --- Tab: Download --------------------------------------------------------
+with tab_download:
+    # Everything here comes from the module-level catalogue and helpers defined
+    # above, which the download bar at the top of the page also uses - one
+    # definition, so the bar and this tab can never disagree about what exists.
+    present = [
+        (path, t, d, prim, file_facts(path)) for path, t, d, prim in OUTPUT_CATALOGUE
+    ]
+    available = [row for row in present if row[4]["exists"]]
+
+    if not available:
+        st.info(
+            "There are no output files yet.\n\n"
+            "Open the **Upload** tab and load your documents - the pipeline "
+            "starts as soon as they are loaded."
+        )
+    else:
+        newest = max(r[4]["modified"] for r in available)
+        st.caption(
+            f"{len(available)} file(s) from the last run, written "
+            f"**{newest:%d %b %Y at %H:%M}**. These are re-read from disk each "
+            f"time you open this tab, so they always reflect the latest run."
+        )
+
+        # ---------- one-tap: everything at once ----------
+        total = sum(r[4]["size"] for r in available)
+        st.download_button(
+            f"⬇  Download everything  ({len(available)} files, {human_size(total)})",
+            data=build_archive(available, newest),
+            file_name=f"pipeline_output_{newest:%Y%m%d_%H%M}.zip",
+            mime="application/zip",
+            type="primary",
+            width="stretch",
+            key="tab_dl_zip",
+        )
+        st.caption(
+            "One ZIP with every file plus a README explaining what each one is."
+        )
+
+        st.divider()
+
+
+        # ---------- the main dataset, also as CSV ----------
+        main = next((r for r in present if r[0] == DATASET_FILE and r[4]["exists"]), None)
+        if main and dataset:
+            st.markdown("#### The dataset, in whichever format you need")
+            c1, c2 = st.columns(2)
+            c1.download_button(
+                f"⬇  JSONL  ({main[4]['rows']} rows)",
+                data=main[4]["bytes"],
+                file_name=DATASET_FILE.name,
+                mime="application/jsonl",
+                width="stretch",
+                help="One JSON object per line - the standard format for "
+                "training pipelines.",
+            )
+
+            # CSV for anyone who wants to open it in Excel, which at a viva is
+            # most people.
+            csv_buffer = io.StringIO()
+            fields = ["question", "answer", "source", "page", "question_type",
+                      "answerable", "quality_score"]
+            writer = csv.DictWriter(csv_buffer, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            for row in dataset:
+                writer.writerow(row)
+            c2.download_button(
+                f"⬇  CSV  ({len(dataset)} rows)",
+                data=csv_buffer.getvalue().encode("utf-8-sig"),
+                file_name="synthetic_dataset.csv",
+                mime="text/csv",
+                width="stretch",
+                help="Opens directly in Excel. Same rows, same columns.",
+            )
+            st.caption(
+                "The CSV is encoded UTF-8 with a BOM so Excel renders accented "
+                "characters correctly instead of mangling them."
+            )
+            st.divider()
+
+        # ---------- look before you download ----------
+        st.markdown("#### Preview a file")
+        st.caption(
+            "The first few records of any output file, so you can check the "
+            "shape of it without downloading and opening it elsewhere."
+        )
+
+        _preview_names = [r[0].name for r in available]
+        _chosen = st.selectbox(
+            "File to preview",
+            _preview_names,
+            index=_preview_names.index(DATASET_FILE.name)
+            if DATASET_FILE.name in _preview_names
+            else 0,
+            key="preview_file",
+        )
+        _chosen_row = next(r for r in available if r[0].name == _chosen)
+        _chosen_path, _c_title, _c_desc, _c_prim, _c_facts = _chosen_row
+        st.caption(f"**{_c_title}** - {_c_desc}")
+
+        _text = _c_facts["bytes"].decode("utf-8", "replace")
+        if _chosen_path.suffix == ".json":
+            # A stats file is a single object; show it as a tree rather than
+            # a wall of text.
+            try:
+                st.json(json.loads(_text), expanded=False)
+            except json.JSONDecodeError:
+                st.code(_text[:4000], language="json")
+        else:
+            _rows = [line for line in _text.splitlines() if line.strip()]
+            _n = st.radio(
+                "Records to show",
+                [3, 10, 25],
+                index=0,
+                horizontal=True,
+                key="preview_n",
+            )
+            st.caption(f"Showing {min(_n, len(_rows))} of {len(_rows):,} records.")
+            _parsed = []
+            for line in _rows[:_n]:
+                try:
+                    _parsed.append(json.loads(line))
+                except json.JSONDecodeError:
+                    _parsed = []
+                    break
+            if _parsed:
+                # A table when the records are flat, raw JSON when they nest -
+                # a dataframe of dicts is unreadable.
+                _flat = all(
+                    not isinstance(v, (dict, list))
+                    for rec in _parsed
+                    for v in rec.values()
+                )
+                if _flat:
+                    st.dataframe(pd.DataFrame(_parsed), hide_index=True, width="stretch")
+                else:
+                    for rec in _parsed:
+                        st.json(rec, expanded=False)
+            else:
+                st.code("\n".join(_rows[:_n])[:4000], language="json")
+
+        st.divider()
+
+        # ---------- every file individually ----------
+        st.markdown("#### Individual files")
+
+        for path, title, desc, primary, facts in present:
+            if not facts["exists"]:
+                st.markdown(f"**{path.name}** &nbsp; `not produced by this run`")
+                st.caption(desc)
+                st.divider()
+                continue
+
+            left, right = st.columns([3, 1])
+            with left:
+                label = f"**{path.name}**"
+                if primary:
+                    label += " &nbsp; ⭐"
+                st.markdown(label)
+                st.caption(f"**{title}** - {desc}")
+                bits = [human_size(facts["size"])]
+                if facts["rows"] is not None:
+                    bits.append(f"{facts['rows']:,} rows")
+                bits.append(f"written {facts['modified']:%d %b %H:%M}")
+                st.caption(" · ".join(bits))
+            with right:
+                st.download_button(
+                    "⬇  Download",
+                    data=facts["bytes"],
+                    file_name=path.name,
+                    mime="application/json" if path.suffix == ".json" else "application/jsonl",
+                    key=f"dl_{path.name}",
+                    width="stretch",
+                )
+                if facts["rows"] == 0:
+                    st.caption("empty - nothing to show")
+            st.divider()
+
+        st.caption(DISCLAIMER)

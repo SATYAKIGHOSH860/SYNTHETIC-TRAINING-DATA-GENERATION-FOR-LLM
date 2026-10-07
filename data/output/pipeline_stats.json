@@ -1,0 +1,275 @@
+{
+  "run_health": {
+    "complete": true,
+    "note": "Every generated pair was graded by the judge."
+  },
+  "model": "openai/gpt-oss-120b",
+  "judge_model": "qwen/qwen3.8-27b",
+  "embedding_model": "all-MiniLM-L6-v2",
+  "parameters": {
+    "min_quality_score": 4,
+    "similarity_threshold": 0.9,
+    "max_total_score": 6,
+    "criterion_floors": {
+      "groundedness": 2,
+      "specificity": 1,
+      "completeness": 1
+    },
+    "dedup_embeds": "question + answer",
+    "dedup_number_guard": true,
+    "generation_max_tokens": 1024,
+    "judge_max_tokens": 512,
+    "reasoning_effort": "low"
+  },
+  "counts": {
+    "chunks_processed": 45,
+    "raw_pairs": 116,
+    "raw_answerable": 111,
+    "raw_unanswerable": 5,
+    "validated_pairs": 104,
+    "rejected_pairs": 12,
+    "duplicates_removed": 1,
+    "final_pairs": 103,
+    "final_unanswerable": 5
+  },
+  "rates": {
+    "pairs_per_chunk": 2.58,
+    "pass_rate_pct": 89.7,
+    "answerable_pass_rate_pct": 89.2,
+    "duplicate_rate_pct": 1.0,
+    "overall_yield_pct": 88.8,
+    "judge_failures": 0,
+    "ungrounded_vetoed": 12
+  },
+  "quality": {
+    "avg_quality_score": 5.94,
+    "min_quality_score_observed": 4,
+    "max_quality_score_observed": 6,
+    "score_distribution": {
+      "4": 3,
+      "6": 95
+    },
+    "score_distribution_all_graded": {
+      "3": 1,
+      "4": 5,
+      "5": 9,
+      "6": 96
+    },
+    "avg_subscores": {
+      "groundedness": 2.0,
+      "specificity": 1.97,
+      "completeness": 1.97
+    }
+  },
+  "abstention": {
+    "ratio_requested": 0.1,
+    "generated": 5,
+    "verified": 5,
+    "in_dataset": 5,
+    "answer": "This information is not available in the provided document.",
+    "failed_check": 0
+  },
+  "run_cost": {
+    "api_calls": 104,
+    "tokens_used": 62500,
+    "tokens_by_stage": {
+      "generate": 33048,
+      "judge": 29452
+    },
+    "token_budget": 200000,
+    "wall_seconds": 609.5,
+    "wall_human": "10m 9s"
+  },
+  "per_source": {
+    "farmerbook.pdf": 103
+  },
+  "question_types": {
+    "factual": 46,
+    "procedural": 28,
+    "definitional": 24,
+    "unanswerable": 5
+  },
+  "diversity": {
+    "unique_openers": 56,
+    "top_openers": [
+      {
+        "opener": "what is",
+        "count": 15,
+        "pct": 14.6
+      },
+      {
+        "opener": "what does",
+        "count": 11,
+        "pct": 10.7
+      },
+      {
+        "opener": "what are",
+        "count": 6,
+        "pct": 5.8
+      },
+      {
+        "opener": "how should",
+        "count": 5,
+        "pct": 4.9
+      },
+      {
+        "opener": "what specific",
+        "count": 4,
+        "pct": 3.9
+      },
+      {
+        "opener": "what percentage",
+        "count": 3,
+        "pct": 2.9
+      },
+      {
+        "opener": "how can",
+        "count": 3,
+        "pct": 2.9
+      },
+      {
+        "opener": "how does",
+        "count": 2,
+        "pct": 1.9
+      },
+      {
+        "opener": "in which",
+        "count": 2,
+        "pct": 1.9
+      },
+      {
+        "opener": "how is",
+        "count": 2,
+        "pct": 1.9
+      },
+      {
+        "opener": "how much",
+        "count": 2,
+        "pct": 1.9
+      },
+      {
+        "opener": "how often",
+        "count": 2,
+        "pct": 1.9
+      }
+    ],
+    "most_common_pct": 14.6
+  },
+  "top_reject_reasons": [
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): answer omits 'people' and implies list is complet",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): Invents definition of control group not in passag",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): Passage is truncated, answer completes the senten",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 0/2): Invents Rhizobium benefit for rice",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): Adds 'especially' implying exclusivity not in tex",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): Adds 'bacteria' not fully in passage",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): Invents definition not in passage",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): Conflates general symptoms with specific gummosis",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): Expands ETL acronym not in passage",
+      "count": 1
+    },
+    {
+      "reason": "UNGROUNDED (groundedness 1/2): Adds 'increasing disease risk' inference",
+      "count": 1
+    }
+  ],
+  "disclaimer": "EDUCATIONAL AND RESEARCH USE ONLY. This dataset was generated automatically from the source documents supplied to the pipeline by a large language model, and validated by another language model. It is NOT professional advice of any kind and MUST NOT be used for decision-making. Answers may be incomplete, outdated or wrong. Always consult the original document and a qualified professional. Where the sources are clinical, this is explicitly NOT medical advice and NOT for patient care; no patient data was used at any stage.",
+  "grounding": {
+    "analysed": 98,
+    "not_matched": 0,
+    "avg_lexical_overlap": 0.839,
+    "min_lexical_overlap": 0.2,
+    "bands": {
+      "strong": 83,
+      "moderate": 11,
+      "weak": 4
+    },
+    "band_pct": {
+      "strong": 84.7,
+      "moderate": 11.2,
+      "weak": 4.1
+    },
+    "unsupported_number_pairs": 0,
+    "unsupported_number_pct": 0.0,
+    "by_source": {
+      "farmerbook.pdf": 0.839
+    },
+    "by_question_type": {
+      "definitional": 0.844,
+      "factual": 0.833,
+      "procedural": 0.844
+    },
+    "overlap_histogram": [
+      {
+        "bin": "0.0-0.1",
+        "count": 0
+      },
+      {
+        "bin": "0.1-0.2",
+        "count": 0
+      },
+      {
+        "bin": "0.2-0.3",
+        "count": 3
+      },
+      {
+        "bin": "0.3-0.4",
+        "count": 1
+      },
+      {
+        "bin": "0.4-0.5",
+        "count": 0
+      },
+      {
+        "bin": "0.5-0.6",
+        "count": 4
+      },
+      {
+        "bin": "0.6-0.7",
+        "count": 7
+      },
+      {
+        "bin": "0.7-0.8",
+        "count": 13
+      },
+      {
+        "bin": "0.8-0.9",
+        "count": 27
+      },
+      {
+        "bin": "0.9-1.0",
+        "count": 43
+      }
+    ],
+    "judge_comparison": {
+      "pairs": 98,
+      "agreement_pct": 84.7,
+      "judge_clean_but_low_overlap": 4,
+      "judge_flagged_but_high_overlap": 0
+    }
+  }
+}

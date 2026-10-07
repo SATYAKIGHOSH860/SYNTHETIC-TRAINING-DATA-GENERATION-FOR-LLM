@@ -1,0 +1,54 @@
+# Secrets - .env holds a live GROQ_API_KEY. Never commit.
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Source documents you upload. Kept out of the repo deliberately: they are
+# usually someone else's copyright, they are large, and data/raw/ is emptied
+# at the start of every session anyway. The folder itself is tracked via
+# .gitkeep so a fresh clone has somewhere to put them.
+data/raw/*
+!data/raw/.gitkeep
+
+# Pipeline outputs. The results ARE committed - they are the evidence behind
+# every number in the README, and an examiner should be able to check them
+# without an API key. Only the per-run scaffolding is excluded: logs and the
+# live progress/state files say nothing about the dataset and change on every
+# run.
+data/output/run.log
+data/output/run_progress.json
+data/output/run_state.json
+data/output/run_plan.json
+
+# Resume checkpoints - run scaffolding, not results. Kept out of the repo
+# because they are machine- and run-specific and can be large.
+data/cache/
+
+# Streamlit
+.streamlit/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Model cache
+.cache/
+
+# pytest
+.pytest_cache/
+
+# Run logs
+*.log

@@ -1,0 +1,27 @@
+{
+  "n": 40,
+  "criteria": {
+    "groundedness": {
+      "kappa": null,
+      "weighted_kappa": null,
+      "exact_agreement": 0.025,
+      "note": "human used a single value - kappa undefined"
+    },
+    "specificity": {
+      "kappa": null,
+      "weighted_kappa": null,
+      "exact_agreement": 0.025,
+      "note": "human used a single value - kappa undefined"
+    },
+    "completeness": {
+      "kappa": null,
+      "weighted_kappa": null,
+      "exact_agreement": 0.0,
+      "note": "human used a single value - kappa undefined"
+    }
+  },
+  "keep_reject": {
+    "kappa": null,
+    "agreement": 0.1
+  }
+}

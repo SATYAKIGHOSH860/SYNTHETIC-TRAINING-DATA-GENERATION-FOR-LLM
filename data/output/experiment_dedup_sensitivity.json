@@ -1,0 +1,26 @@
+[
+  {
+    "similarity_threshold": 0.75,
+    "survivors": 95,
+    "removed": 4,
+    "removed_pct": 4.0
+  },
+  {
+    "similarity_threshold": 0.85,
+    "survivors": 97,
+    "removed": 2,
+    "removed_pct": 2.0
+  },
+  {
+    "similarity_threshold": 0.9,
+    "survivors": 98,
+    "removed": 1,
+    "removed_pct": 1.0
+  },
+  {
+    "similarity_threshold": 0.95,
+    "survivors": 98,
+    "removed": 1,
+    "removed_pct": 1.0
+  }
+]

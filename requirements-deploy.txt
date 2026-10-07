@@ -1,0 +1,41 @@
+# Deployment requirements (Linux hosts: Hugging Face Spaces, Render, Railway,
+# Fly.io, Streamlit Community Cloud).
+#
+# WHY THIS FILE EXISTS, separately from requirements.txt:
+#
+# On Linux, `pip install torch` installs the CUDA build by default - roughly
+# 2-3 GB of GPU libraries. This project has no GPU and never will: torch is
+# here only because sentence-transformers uses it to run MiniLM embeddings on
+# CPU during deduplication. The CPU-only wheel is about 200 MB instead.
+#
+# That difference decides whether the app fits inside a free tier at all.
+# The line below points pip at PyTorch's CPU-only index for torch alone;
+# everything else comes from PyPI as usual.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.13.0+cpu
+
+# NOTE: requirements.txt is now deploy-safe on its own - it carries the same
+# --find-links CPU index and a platform-marked torch pin. Streamlit Community
+# Cloud reads requirements.txt and cannot be pointed at another filename, so
+# that is the file that matters there. This one is kept for hosts where you
+# want the Linux pins stated unconditionally, and must be kept in step with it.
+#
+# --- everything else, same pins as requirements.txt -----------------------
+langchain-core==1.6.1
+langchain-community==0.4.2
+langchain-text-splitters==1.1.2
+groq==0.37.1
+pypdf==6.16.2
+docx2txt==0.9
+sentence-transformers==6.0.1
+datasets==5.0.1
+huggingface-hub==1.29.0
+streamlit==1.63.0
+plotly==7.0.0
+pandas==3.0.5
+numpy==2.5.2
+python-dotenv==1.2.3
+scikit-learn==1.9.0
+httpx==0.28.1
+pytest==9.1.1

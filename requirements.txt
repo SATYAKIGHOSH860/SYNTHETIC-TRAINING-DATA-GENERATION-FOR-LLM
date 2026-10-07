@@ -1,0 +1,51 @@
+# Synthetic Training Data Generation Pipeline
+# Python 3.12.7, Windows, CPU-only (no CUDA - this project has no GPU).
+#
+#   python -m venv venv
+#   venv\Scripts\pip install -r requirements.txt
+#
+# torch is here only because sentence-transformers uses it to run the MiniLM
+# embeddings on CPU during deduplication. This project has no GPU.
+#
+# WHY THE --find-links LINE BELOW: on Linux, a bare `torch==2.13.0` installs
+# the CUDA build - roughly 2-3 GB of GPU libraries that are never used, which
+# is enough to fail a free-tier deployment outright. Pointing pip at PyTorch's
+# CPU index and pinning the +cpu build keeps it near 200 MB. --find-links
+# rather than --extra-index-url because the latter breaks `uv`.
+#
+# The platform marker exists because macOS has no +cpu variant - the PyPI
+# builds there are already CPU-only.
+# langchain-core is imported directly (src/ingest.py builds Document objects
+# when loading .txt/.md/.docx), so it is pinned rather than left to arrive as
+# a transitive dependency of the two packages below.
+langchain-core==1.6.1
+langchain-community==0.4.2
+langchain-text-splitters==1.1.2
+#
+# Deliberately NOT here: `langchain` (the umbrella package) and
+# `langchain-groq`. Nothing in this project imports either - the Groq calls go
+# through the `groq` SDK directly, and only the community loaders and the text
+# splitter are used. Both were installed during an early draft and removing
+# them from the manifest keeps a fresh install honest and smaller.
+groq==0.37.1
+pypdf==6.16.2
+docx2txt==0.9
+sentence-transformers==6.0.1
+--find-links https://download.pytorch.org/whl/cpu/torch/
+torch==2.13.0+cpu ; sys_platform == "linux" or sys_platform == "win32"
+torch==2.13.0 ; sys_platform == "darwin"
+datasets==5.0.1
+huggingface-hub==1.29.0
+streamlit==1.63.0
+plotly==7.0.0
+pandas==3.0.5
+numpy==2.5.2
+python-dotenv==1.2.3
+scikit-learn==1.9.0
+httpx==0.28.1
+
+# Tests only. The suite in tests/ covers the keep rule, deduplication, the
+# abstention plumbing and checkpoint reuse - all offline, no API calls.
+#   python -m pytest              (everything)
+#   python -m pytest -m "not slow"  (skips the two that load the embedder)
+pytest==9.1.1
