@@ -597,6 +597,15 @@ Eight tabs:
 
 ---
 
+## Licence
+
+MIT — see [LICENSE](LICENSE). The licence covers the pipeline code in this
+repository. It does **not** cover the source documents you feed it, nor any
+dataset generated from them: those carry whatever rights the original document
+carries, which is your responsibility to check before redistributing.
+
+---
+
 ## Next steps
 
 1. **Score a varied blind sample and compute the kappa.** This is the one
