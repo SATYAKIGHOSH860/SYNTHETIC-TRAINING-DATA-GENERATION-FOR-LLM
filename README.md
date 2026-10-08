@@ -53,13 +53,23 @@ PDFs → chunks → boilerplate filter → LLM generates Q&A → LLM judge score
 | 3. Validate | [src/validate.py](src/validate.py) | LLM-as-judge (a *different* model), 3 criteria × 0–2, keep ≥ 4/6 **and** every per-criterion floor |
 | 4. Deduplicate | [src/deduplicate.py](src/deduplicate.py) | MiniLM embeddings over question + answer, cosine ≥ 0.90 = duplicate, with a number guard |
 | 5. Export | [src/export.py](src/export.py) | JSONL + ChatML + statistics + optional HF push |
-| — | [src/budget.py](src/budget.py) | Token budget estimation and metering |
-| — | [src/grounding.py](src/grounding.py) | Independent, non-LLM hallucination check |
-| — | [src/runner.py](src/runner.py) | Uploads, session input, starting/stopping background runs |
-| — | [src/progress.py](src/progress.py) | Progress file shared by pipeline and dashboard |
-| — | [src/checkpoint.py](src/checkpoint.py) | Resume after a crash or an exhausted quota |
-| — | [tests/test_pipeline.py](tests/test_pipeline.py) | 24 offline tests over the keep rule, dedup and checkpoints |
-| — | [dashboard/app.py](dashboard/app.py) | 8-tab dashboard: run it, then inspect it |
+
+The five stages above are the pipeline. Everything below supports them — these
+are the parts that make it survivable, checkable and usable rather than just a
+script that runs once on a good day.
+
+| Role | File | What it does |
+|---|---|---|
+| Cost control | [src/budget.py](src/budget.py) | Estimates tokens *before* spending them, meters real usage during the run, and stops cleanly before the invisible daily cap rather than stalling against it |
+| Verification | [src/grounding.py](src/grounding.py) | The one quality signal with no language model in it: word overlap between each answer and its source, plus any number the answer states that the passage does not |
+| Orchestration | [src/runner.py](src/runner.py) | Handles uploads, empties the session input folder, and starts/stops the pipeline as a separate process so closing the browser cannot kill a run |
+| Orchestration | [src/progress.py](src/progress.py) | The progress file the pipeline writes and the dashboard reads — stage, counts, ETA and a heartbeat, so a dead run is detectable rather than a hung page |
+| Resilience | [src/checkpoint.py](src/checkpoint.py) | Fingerprinted resume. A run killed at chunk 90 of 100 does not re-pay for the first 89; changing the model or prompt invalidates the cache instead of blending two generators' output |
+| Configuration | [src/config.py](src/config.py) | Every path, model id and tunable in one place, plus key loading and the Windows UTF-8 fix |
+| Testing | [tests/test_pipeline.py](tests/test_pipeline.py) | 24 offline tests, no API calls, over the keep rule, deduplication, abstention and checkpoint reuse |
+| Interface | [dashboard/app.py](dashboard/app.py) | The 8-tab dashboard: upload, run, and then inspect what was removed and why |
+| Interface | [dashboard/theme.py](dashboard/theme.py) | Design tokens and CSS, kept out of the app logic |
+| Experiments | [experiments/](experiments/) | Threshold sensitivity, deduplication sensitivity and judge reliability — the three studies behind the numbers above |
 
 ---
 
@@ -260,9 +270,67 @@ a meaningless `κ = 0.000, slight agreement` reached this README's predecessor.
 
 **This remains the project's one genuinely open item.** Until a varied blind
 sample is scored, the judge's quality scores are unverified by any human, and
-the honest position is to say so rather than to quote a number. The independent
-grounding check in the previous section is the closest thing to external
-validation currently available.
+the honest position is to say so rather than to quote a number.
+
+#### What *is* known about the judge, without a kappa
+
+Two other checks run regardless, and both are in the dashboard's **Judge
+Reliability** tab:
+
+**Does it discriminate at all?** Over the 111 pairs it graded, it used only 4
+of the 7 possible totals and gave **96 of them (86.5%) a full 6/6**:
+
+| Total | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|
+| Pairs | 1 | 5 | 9 | **96** |
+
+Per criterion it is more informative than that summary suggests — groundedness
+came out 2 on 99 pairs, 1 on 11 and 0 on 1, and those 12 non-perfect scores are
+exactly what the floors rejected. But a judge awarding full marks to 86.5% of
+everything is **lenient on this corpus**, and that is the honest reading. It
+also explains why the total threshold does so little (see experiment 1): there
+is almost nothing between 4 and 6 for it to cut.
+
+**Does it agree with something that is not a model?** The independent grounding
+check agrees with it on **84.7% of 98 pairs**. Where they diverge, it is
+one-directional: 4 pairs the judge called fully grounded scored low on word
+overlap, and **zero** that the judge marked down scored high. That asymmetry is
+mild evidence the judge is generous rather than erratic — it over-accepts, it
+does not randomly reject.
+
+Neither is a substitute for a human kappa. Both are the kind of evidence you
+can offer in the meantime without overclaiming.
+
+#### To finish it
+
+```bash
+streamlit run dashboard/app.py     # Judge Reliability tab -> Score a sample by hand
+# or, in the terminal:
+python experiments/judge_reliability.py           # score the 40-pair sample
+python experiments/judge_reliability.py --report  # compute kappa
+```
+
+The sample is seeded, so it is the same 40 pairs every time; progress saves
+after each one, so it can be done in sittings. **Score each pair on its own
+merits** — the failure above happened because every pair received an identical
+score.
+
+#### What the result will mean (stated in advance)
+
+Pre-committing to the interpretation is the point of doing this properly — it
+stops the number being rationalised after the fact.
+
+| κ (keep/reject) | Reading | What this project would then do |
+|---|---|---|
+| ≥ 0.61 | substantial or better | Quote the quality scores as a reasonable proxy for human judgement |
+| 0.41 – 0.60 | moderate | Quote them with the caveat stated beside every figure |
+| 0.21 – 0.40 | fair | Downweight the judge; lead with the grounding check instead |
+| ≤ 0.20 | slight or none | Treat the quality scores as unvalidated, say so in the conclusions, and treat a better rubric or a stronger judge as required future work |
+
+Given the leniency above, a mediocre kappa would not be surprising. **Reporting
+it anyway is worth more than a flattering number** — a pipeline that measures
+its own weakest link and says so is doing the thing a dataset paper is supposed
+to do.
 
 ---
 
