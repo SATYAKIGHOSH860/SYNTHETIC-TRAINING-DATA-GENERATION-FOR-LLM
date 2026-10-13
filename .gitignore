@@ -38,6 +38,14 @@ data/cache/
 # Streamlit
 .streamlit/
 
+# Private working documents. Kept on disk, deliberately out of the repository:
+# USER_GUIDE.md is viva preparation (70 interview questions with answers) and
+# BUILD_PROMPT.md is the brief for rebuilding the project. Both are for the
+# author, not for anyone reading the repo. Listed here so a future `git add -A`
+# cannot put them back by accident.
+USER_GUIDE.md
+BUILD_PROMPT.md
+
 # OS / editor noise
 .DS_Store
 Thumbs.db
